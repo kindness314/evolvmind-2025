@@ -1,2 +1,11 @@
-# -
-项目旨在开发一个具有“成长性”的个人数字分身系统。它不仅是信息的存储库，更是基于大语言模型（LLM）的智能认知伙伴。该系统能无缝聚合用户输入的多源碎片化知识，并通过深度理解与主动归纳，将其转化为结构化的个人知识网络。随着时间推移，它将持续学习用户的思维模式，实现从被动记录到主动洞察、辅助创造的能力跃迁，最终成为个人智力与记忆的延伸。
+
+  # Multimodal Information Extraction UI
+
+  This is a code bundle for Multimodal Information Extraction UI. The original project is available at https://www.figma.com/design/FXQmxaeq8L9CPUC0qGu30N/Multimodal-Information-Extraction-UI.
+
+  ## Running the code
+
+  Run `npm i` to install the dependencies.
+
+  Run `npm run dev` to start the development server.
+  
