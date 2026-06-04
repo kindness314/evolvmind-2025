@@ -2,6 +2,8 @@ import { Type, Camera, Mic, FileUp, Save, X, Loader2, Play, Pause, Trash2, Spark
 import { useState, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { extractInformation } from '../../lib/ai';
+import { buildKnowledgeGraphFromContent, checkGraphSetup } from '../../lib/graph';
+import { generateEmbeddingForRow } from '../../lib/search';
 
 type CaptureMode = 'text' | 'photo' | 'audio' | 'import' | null;
 
@@ -105,15 +107,50 @@ export function CapturePage() {
         finalContent = publicUrl;
       }
 
-      const { error } = await supabase.from('captured_info').insert({
+      const { data, error } = await supabase
+        .from('captured_info')
+        .insert({
         type: mode,
         title: extractedData.title,
         content: finalContent,
         tags: extractedData.keywords,
         summary: extractedData.summary
-      });
+        })
+        .select('id')
+        .single();
 
       if (error) throw error;
+
+      // fire-and-forget: 为新记录生成 embedding 向量
+      if (data?.id) {
+        generateEmbeddingForRow(data.id);
+      }
+
+      const contentForGraph =
+        mode === 'text'
+          ? textInput
+          : `标题: ${extractedData.title}\n摘要: ${extractedData.summary}\n关键词: ${extractedData.keywords.join(', ')}\n资源: ${finalContent}`;
+
+      void (async () => {
+        const setup = await checkGraphSetup();
+        if (!setup.schemaOk) {
+          if (setup.schemaError?.toLowerCase().includes('invalid api key')) {
+            alert('知识图谱未更新：Supabase 连接配置错误（请检查 VITE_SUPABASE_PROJECT_ID / VITE_SUPABASE_ANON_KEY 并重新部署）。');
+          } else {
+            alert('知识图谱未更新：数据库未应用图谱迁移（请在 Supabase 执行 20240401000006_extend_knowledge_graph.sql）。');
+          }
+          console.error('知识图谱 schema 检查失败:', setup.schemaError);
+          return;
+        }
+        if (!setup.llmOk) {
+          alert('知识图谱未更新：LLM 未配置（请在 Vercel 配置 MINIMAX_API_KEY，或本地配置 VITE_MINIMAX_API_KEY）。');
+          console.error('知识图谱 LLM 检查失败:', setup.llmError);
+          return;
+        }
+        await buildKnowledgeGraphFromContent({ content: contentForGraph, capturedId: data?.id });
+      })().catch((e) => {
+        console.error('知识图谱更新失败:', e);
+      });
 
       handleCancel(); // 重置状态
     } catch (error) {

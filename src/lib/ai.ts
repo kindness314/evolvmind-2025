@@ -8,9 +8,85 @@ export interface ExtractedInfo {
   summary: string;
 }
 
+function safeJsonParse(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonObjects(text: string): string[] {
+  const s = (text || '').trim();
+  const results: string[] = [];
+  let i = 0;
+  while (i < s.length) {
+    const start = s.indexOf('{', i);
+    if (start < 0) break;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let j = start; j < s.length; j++) {
+      const ch = s[j];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '{') {
+        depth++;
+        continue;
+      }
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          results.push(s.slice(start, j + 1));
+          i = j + 1;
+          break;
+        }
+      }
+      if (j === s.length - 1) i = s.length;
+    }
+  }
+  return results;
+}
+
+function normalizeContentToJson(text: string): any {
+  const trimmed = (text || '').trim();
+  const withoutFence = trimmed
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+
+  const direct = safeJsonParse(withoutFence);
+  if (direct) return direct;
+
+  const all = extractJsonObjects(withoutFence);
+  if (all.length > 0) {
+    for (let idx = all.length - 1; idx >= 0; idx--) {
+      const parsed = safeJsonParse(all[idx]);
+      if (parsed && (parsed.title || parsed.summary || parsed.keywords)) return parsed;
+    }
+  }
+
+  return null;
+}
+
 export async function extractInformation(content: string): Promise<ExtractedInfo> {
   try {
-    const useClientKey = Boolean(MINIMAX_API_KEY);
+    const useClientKey = Boolean(MINIMAX_API_KEY) && import.meta.env.DEV;
 
     if (useClientKey) {
       const modelName = MINIMAX_MODEL || 'abab6.5s-chat';
@@ -42,12 +118,14 @@ export async function extractInformation(content: string): Promise<ExtractedInfo
 
       const data = await response.json();
       let contentStr = data.choices?.[0]?.message?.content || '';
-      contentStr = contentStr.replace(/```json\n?/i, '').replace(/\n?```/i, '').trim();
-      const result = JSON.parse(contentStr);
+      const result = normalizeContentToJson(contentStr);
+      if (!result) {
+        throw new Error('Invalid AI response format');
+      }
 
       return {
         title: result.title || '无标题',
-        keywords: result.keywords || [],
+        keywords: Array.isArray(result.keywords) ? result.keywords : [],
         summary: result.summary || '无摘要'
       };
     }

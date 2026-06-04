@@ -1,8 +1,10 @@
-import { Bell, Lock, Palette, Cpu, Database, ChevronRight, LogOut } from 'lucide-react';
+import { Bell, Lock, Palette, Cpu, Database, ChevronRight, LogOut, Sparkles, Loader2 } from 'lucide-react';
+import { motion } from 'motion/react';
 import { Switch } from './ui/switch';
 import { createClient } from '@supabase/supabase-js';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import { useState } from 'react';
+import { requestBackfill } from '../../lib/search';
 
 interface SettingsPageProps {
   onLogout?: () => void;
@@ -10,6 +12,8 @@ interface SettingsPageProps {
 
 export function SettingsPage({ onLogout }: SettingsPageProps) {
   const [loggingOut, setLoggingOut] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<string | null>(null);
 
   const supabase = createClient(
     `https://${projectId}.supabase.co`,
@@ -18,7 +22,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
 
   const handleLogout = async () => {
     if (loggingOut) return;
-    
+
     setLoggingOut(true);
     try {
       await supabase.auth.signOut();
@@ -31,6 +35,20 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
       console.error('退出登录失败:', error);
     } finally {
       setLoggingOut(false);
+    }
+  };
+
+  const handleBackfill = async () => {
+    if (backfilling) return;
+    setBackfilling(true);
+    setBackfillResult(null);
+    try {
+      const result = await requestBackfill(20);
+      setBackfillResult(`成功回填 ${result.processed}/${result.total} 条${result.errors?.length ? `，${result.errors.length} 条失败` : ''}`);
+    } catch (e: any) {
+      setBackfillResult(`回填失败: ${e.message}`);
+    } finally {
+      setBackfilling(false);
     }
   };
 
@@ -172,6 +190,43 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
               <option>本地模型</option>
             </select>
           </div>
+        </div>
+      </div>
+
+      {/* 语义搜索 */}
+      <div className="bg-white mb-4">
+        <div className="px-4 py-3 border-b border-gray-200">
+          <h3 className="text-sm font-medium text-gray-700 flex items-center gap-2">
+            <Sparkles className="w-4 h-4" />
+            语义搜索
+          </h3>
+        </div>
+
+        <div className="p-4 space-y-3">
+          <p className="text-xs text-gray-500">
+            语义搜索基于向量相似度匹配，需要先为已有数据生成 embedding 向量。
+          </p>
+          <motion.button
+            whileTap={{ scale: 0.95 }}
+            onClick={handleBackfill}
+            disabled={backfilling}
+            className="w-full px-4 py-2.5 bg-purple-500 text-white text-sm font-medium hover:bg-purple-600 transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2"
+            style={{ borderRadius: '4px' }}
+          >
+            {backfilling ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                回填中...
+              </>
+            ) : (
+              '回填 Embedding 向量'
+            )}
+          </motion.button>
+          {backfillResult && (
+            <p className="text-xs text-gray-600 bg-gray-50 p-2" style={{ borderRadius: '4px' }}>
+              {backfillResult}
+            </p>
+          )}
         </div>
       </div>
 

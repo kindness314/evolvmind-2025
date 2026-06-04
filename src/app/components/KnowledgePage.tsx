@@ -2,6 +2,7 @@ import { Search, ZoomIn, ZoomOut, Maximize2, Loader2 } from 'lucide-react';
 import { useRef, useCallback, useState, useEffect } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 import { supabase } from '../../lib/supabase';
+import { checkGraphSetup, type GraphSetupStatus } from '../../lib/graph';
 
 interface GraphNode {
   id: string;
@@ -19,6 +20,7 @@ export function KnowledgePage() {
   const fgRef = useRef<any>();
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
+  const [setupStatus, setSetupStatus] = useState<GraphSetupStatus | null>(null);
   const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; links: GraphLink[] }>({
     nodes: [],
     links: []
@@ -28,6 +30,9 @@ export function KnowledgePage() {
 
   useEffect(() => {
     fetchGraphData();
+    void checkGraphSetup()
+      .then(setSetupStatus)
+      .catch((e) => setSetupStatus({ schemaOk: false, llmOk: false, schemaError: String(e), llmError: String(e) }));
     
     const updateDimensions = () => {
       setDimensions({
@@ -115,6 +120,18 @@ export function KnowledgePage() {
     <div className="h-full flex flex-col bg-white">
       {/* 顶部搜索和筛选 */}
       <div className="flex-none px-4 py-3 border-b border-gray-200">
+        {setupStatus && (!setupStatus.schemaOk || !setupStatus.llmOk) ? (
+          <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 text-xs text-red-700" style={{ borderRadius: '4px' }}>
+            {!setupStatus.schemaOk ? (
+              setupStatus.schemaError?.toLowerCase().includes('invalid api key') ? (
+                <div>Supabase 连接配置错误：请检查 VITE_SUPABASE_PROJECT_ID / VITE_SUPABASE_ANON_KEY 并重新部署</div>
+              ) : (
+                <div>数据库未应用图谱迁移：请先在 Supabase 执行 20240401000006_extend_knowledge_graph.sql</div>
+              )
+            ) : null}
+            {setupStatus.schemaOk && !setupStatus.llmOk ? <div>LLM 未配置：请在 Vercel 配置 MINIMAX_API_KEY（或本地配置 VITE_MINIMAX_API_KEY）</div> : null}
+          </div>
+        ) : null}
         <div className="relative mb-3">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
