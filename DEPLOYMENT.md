@@ -19,13 +19,18 @@
 
 ## Vercel：配置服务端环境变量
 
-本项目的知识图谱抽取走服务端 API：[/api/graph/extract](file:///d:/evolvmind-2025/EvolvMind/api/graph/extract.ts)，需要在 Vercel 项目里配置环境变量：
+本项目的 AI 信息提取与知识图谱抽取都走服务端 API：[/api/extract](file:///d:/evolvmind-2025/EvolvMind/api/extract.ts) 和 [/api/graph/extract](file:///d:/evolvmind-2025/EvolvMind/api/graph/extract.ts)，需要在 Vercel 项目里配置环境变量：
 - `MINIMAX_API_KEY`（必填）
 - `MINIMAX_MODEL`（可选）
 - `MINIMAX_BASE_URL`（可选）
 
 配置位置：
 - Vercel Dashboard → Project → Settings → Environment Variables
+
+安全注意：
+- 不要配置 `VITE_MINIMAX_API_KEY`、`VITE_MINIMAX_MODEL` 或 `VITE_MINIMAX_BASE_URL`。
+- `VITE_` 开头的变量会被打包进前端，MiniMax 密钥和调用配置必须只保存在服务端环境变量中。
+- 前端只能调用 `/api/*` 服务端函数，不得直接请求 MiniMax API。
 
 验证：
 - 访问 `https://<你的域名>/api/graph/extract`（GET）应返回 `ok: true` 与 `hasKey`
@@ -47,6 +52,5 @@
 ## 本地开发（可选）
 
 如果你需要在本地同时跑 Vite + /api 路由：
+- 在本地 `.env` 中配置 `MINIMAX_API_KEY`（参考 [.env.example](file:///d:/evolvmind-2025/EvolvMind/.env.example)）
 - 使用 Vercel CLI：`vercel dev`
-
-如果你想让前端直接调用 LLM（不经过 /api），可以在本地添加 `.env`（参考 [.env.example](file:///d:/evolvmind-2025/EvolvMind/.env.example)）。
