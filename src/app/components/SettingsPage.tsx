@@ -4,6 +4,7 @@ import { Switch } from './ui/switch';
 import { createClient } from '@supabase/supabase-js';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import { useState } from 'react';
+import { requestKnowledgeNodeBackfill } from '../../lib/graphSearch';
 import { requestBackfill } from '../../lib/search';
 
 interface SettingsPageProps {
@@ -14,6 +15,8 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
   const [loggingOut, setLoggingOut] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [backfillResult, setBackfillResult] = useState<string | null>(null);
+  const [nodeBackfilling, setNodeBackfilling] = useState(false);
+  const [nodeBackfillResult, setNodeBackfillResult] = useState<string | null>(null);
 
   const supabase = createClient(
     `https://${projectId}.supabase.co`,
@@ -49,6 +52,20 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
       setBackfillResult(`回填失败: ${e.message}`);
     } finally {
       setBackfilling(false);
+    }
+  };
+
+  const handleNodeBackfill = async () => {
+    if (nodeBackfilling) return;
+    setNodeBackfilling(true);
+    setNodeBackfillResult(null);
+    try {
+      const result = await requestKnowledgeNodeBackfill(20);
+      setNodeBackfillResult(`成功回填 ${result.processed}/${result.total} 个知识节点${result.errors?.length ? `，${result.errors.length} 个失败` : ''}`);
+    } catch (e: any) {
+      setNodeBackfillResult(`知识节点回填失败: ${e.message}`);
+    } finally {
+      setNodeBackfilling(false);
     }
   };
 
@@ -206,6 +223,9 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
           <p className="text-xs text-gray-500">
             语义搜索基于向量相似度匹配，需要先为已有数据生成 embedding 向量。
           </p>
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-gray-600">捕获内容索引</p>
+          </div>
           <motion.button
             whileTap={{ scale: 0.95 }}
             onClick={handleBackfill}
@@ -227,6 +247,31 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
               {backfillResult}
             </p>
           )}
+
+          <div className="pt-3 border-t border-gray-100 space-y-2">
+            <p className="text-xs font-medium text-gray-600">知识节点索引</p>
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              onClick={handleNodeBackfill}
+              disabled={nodeBackfilling}
+              className="w-full px-4 py-2.5 bg-blue-500 text-white text-sm font-medium hover:bg-blue-600 transition-colors disabled:bg-blue-300 flex items-center justify-center gap-2"
+              style={{ borderRadius: '4px' }}
+            >
+              {nodeBackfilling ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  回填知识节点中...
+                </>
+              ) : (
+                '回填知识节点 Embedding'
+              )}
+            </motion.button>
+            {nodeBackfillResult && (
+              <p className="text-xs text-gray-600 bg-gray-50 p-2" style={{ borderRadius: '4px' }}>
+                {nodeBackfillResult}
+              </p>
+            )}
+          </div>
         </div>
       </div>
 

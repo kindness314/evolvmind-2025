@@ -143,7 +143,7 @@ export function CapturePage() {
           return;
         }
         if (!setup.llmOk) {
-          alert('知识图谱未更新：LLM 未配置（请在 Vercel 配置 MINIMAX_API_KEY，或本地配置 VITE_MINIMAX_API_KEY）。');
+          alert('知识图谱未更新：LLM 未配置（请在 Vercel 或本地服务端环境配置 MINIMAX_API_KEY）。');
           console.error('知识图谱 LLM 检查失败:', setup.llmError);
           return;
         }

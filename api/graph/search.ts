@@ -1,8 +1,4 @@
-/**
- * POST /api/search — 语义搜索端点
- * 生成 query embedding → 调 Supabase RPC match_captured_info → 返回结果
- */
-import { generateEmbedding, type VercelRequest, type VercelResponse } from './_lib/embedding.js';
+import { generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
@@ -10,7 +6,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'GET') {
-    res.status(200).json({ ok: true, route: '/api/search' });
+    res.status(200).json({ ok: true, route: '/api/graph/search' });
     return;
   }
 
@@ -38,19 +34,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const filterUserId = typeof req.body?.user_id === 'string' ? req.body.user_id : null;
-  const matchThreshold = typeof req.body?.threshold === 'number' ? req.body.threshold : 0.3;
+  const filterScopeId = typeof req.body?.scope_id === 'string' ? req.body.scope_id : null;
+  const matchThreshold = typeof req.body?.threshold === 'number' ? req.body.threshold : 0.25;
   const matchCount = typeof req.body?.count === 'number' ? Math.min(req.body.count, 50) : 20;
 
   try {
-    // 1. 生成查询向量
     const { embedding } = await generateEmbedding({ text: query, apiKey });
-
-    // pgvector 期望字符串格式 "[0.1,0.2,...]"
     const embeddingStr = `[${embedding.join(',')}]`;
 
-    // 2. 调用 Supabase RPC
-    const rpcUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/rpc/match_captured_info`;
-    const rpcResp = await fetch(rpcUrl, {
+    const rpcResp = await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/rpc/match_knowledge_nodes`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -62,6 +54,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         match_threshold: matchThreshold,
         match_count: matchCount,
         filter_user_id: filterUserId,
+        filter_scope_id: filterScopeId,
       }),
     });
 
@@ -72,7 +65,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const results = await rpcResp.json();
-
     res.status(200).json({
       ok: true,
       query,
@@ -80,6 +72,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       count: Array.isArray(results) ? results.length : 0,
     });
   } catch (e: any) {
-    res.status(500).json({ error: 'Search failed', detail: e.message });
+    res.status(500).json({ error: 'Graph search failed', detail: e.message });
   }
 }

@@ -1,4 +1,4 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
 

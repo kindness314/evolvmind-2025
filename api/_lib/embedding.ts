@@ -132,7 +132,27 @@ export function buildEmbeddingText(row: {
     row.content,
     row.tags?.join(', '),
   ].filter(Boolean);
-  // 截断到约 8000 字符（约 2000 token）
+  const text = parts.join('\n');
+  return text.length > 8000 ? text.slice(0, 8000) : text;
+}
+
+export function buildKnowledgeNodeEmbeddingText(row: {
+  name?: string;
+  normalized_name?: string;
+  kind?: string;
+  aliases?: string[];
+  metadata?: Record<string, unknown> | null;
+}): string {
+  const metadataText = row.metadata && Object.keys(row.metadata).length > 0
+    ? JSON.stringify(row.metadata)
+    : '';
+  const parts = [
+    row.name,
+    row.normalized_name && row.normalized_name !== row.name ? row.normalized_name : '',
+    row.kind,
+    row.aliases?.join(', '),
+    metadataText,
+  ].filter(Boolean);
   const text = parts.join('\n');
   return text.length > 8000 ? text.slice(0, 8000) : text;
 }

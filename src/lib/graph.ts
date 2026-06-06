@@ -1,3 +1,4 @@
+import { generateEmbeddingForKnowledgeNode } from './graphSearch';
 import { supabase } from './supabase';
 
 export type GraphNodeKind =
@@ -40,10 +41,6 @@ export type ExtractedGraph = {
   nodes: ExtractedGraphNode[];
   links: ExtractedGraphLink[];
 };
-
-const MINIMAX_API_KEY = import.meta.env.VITE_MINIMAX_API_KEY;
-const MINIMAX_BASE_URL = import.meta.env.VITE_MINIMAX_BASE_URL || 'https://api.edgefn.net/v1';
-const MINIMAX_MODEL = import.meta.env.VITE_MINIMAX_MODEL;
 
 export type GraphSetupStatus = {
   schemaOk: boolean;
@@ -169,12 +166,6 @@ export async function checkGraphSetup(): Promise<GraphSetupStatus> {
   if (linksResp.error) {
     status.schemaOk = false;
     status.schemaError = status.schemaError || stringifyError(linksResp.error);
-  }
-
-  if (import.meta.env.DEV && !MINIMAX_API_KEY) {
-    status.llmOk = false;
-    status.llmError = '本地开发未配置 VITE_MINIMAX_API_KEY，且 /api 路由在 dev 模式下可能不可用';
-    return status;
   }
 
   try {
@@ -307,52 +298,7 @@ async function extractGraphViaServer(content: string): Promise<ExtractedGraph> {
   return payload.data as ExtractedGraph;
 }
 
-async function extractGraphViaClient(content: string): Promise<ExtractedGraph> {
-  const modelName = MINIMAX_MODEL || 'abab6.5s-chat';
-  const response = await fetch(`${MINIMAX_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${MINIMAX_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: modelName,
-      temperature: 0.2,
-      messages: [
-        {
-          role: 'system',
-          content:
-            '你是一个知识图谱抽取助手。你必须只返回严格 JSON，不要输出 Markdown/解释。输出格式必须为：{"nodes":[{"id":"n1","name":"...","kind":"person|event|object|concept|view|conclusion|todo|question|time|location","aliases":["..."],"confidence":0.0}],"links":[{"source":"n1","target":"n2","type":"causes|part_of|supports|happens_at|located_in|related_to","evidence":"输入中的原句片段","confidence":0.0}]}. 规则：同一概念合并为一个 node，并把同义词/别名放入 aliases；nodes<=25 links<=40；evidence 尽量取原文短句；confidence 0-1。',
-        },
-        { role: 'user', content },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Graph extract error: ${response.status} ${errorText}`);
-  }
-
-  const data = await response.json();
-  let contentStr = data.choices?.[0]?.message?.content || '';
-  const extracted = normalizeContentToJson(contentStr);
-  if (!extracted) {
-    throw new Error('Invalid AI response format');
-  }
-  return extracted as ExtractedGraph;
-}
-
 export async function extractGraph(content: string): Promise<ExtractedGraph> {
-  const useClientKey = Boolean(MINIMAX_API_KEY) && import.meta.env.DEV;
-  if (useClientKey) {
-    return extractGraphViaClient(content);
-  }
-
-  if (import.meta.env.DEV) {
-    throw new Error('Graph extract error: 404 /api/graph/extract (本地开发请使用线上地址或使用 vercel dev 运行以启用 /api 路由)');
-  }
-
   return extractGraphViaServer(content);
 }
 
@@ -395,6 +341,7 @@ export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capt
   }
 
   const extractedIdToDbId = new Map<string, string>();
+  const changedNodeIds = new Set<string>();
 
   for (const node of params.graph.nodes) {
     const names = uniqStrings([node.name, ...(node.aliases || [])]);
@@ -432,6 +379,7 @@ export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capt
       if (error) throw error;
 
       extractedIdToDbId.set(node.id, hit.id);
+      changedNodeIds.add(hit.id);
 
       if (primaryNorm) normToNode.set(primaryNorm, hit);
       for (const n of norms) normToNode.set(n, hit);
@@ -458,7 +406,12 @@ export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capt
     const created = insertResp.data as DbNode;
 
     extractedIdToDbId.set(node.id, created.id);
+    changedNodeIds.add(created.id);
     for (const n of norms) normToNode.set(n, created);
+  }
+
+  for (const nodeId of changedNodeIds) {
+    generateEmbeddingForKnowledgeNode(nodeId);
   }
 
   const linksResp = await supabase

@@ -1,8 +1,4 @@
-/**
- * POST /api/embed — 为单条 captured_info 生成 embedding
- * 用于 CapturePage 保存后的 fire-and-forget 调用
- */
-import { generateEmbedding, buildEmbeddingText, type VercelRequest, type VercelResponse } from './_lib/embedding.js';
+import { buildKnowledgeNodeEmbeddingText, generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
@@ -26,9 +22,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const capturedId = typeof req.body?.captured_id === 'string' ? req.body.captured_id : '';
-  if (!capturedId) {
-    res.status(400).json({ error: 'Missing captured_id' });
+  const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : '';
+  if (!nodeId) {
+    res.status(400).json({ error: 'Missing node_id' });
     return;
   }
 
@@ -39,8 +35,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   };
 
   try {
-    // 1. 查询该行
-    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${capturedId}&select=id,title,summary,content,tags&limit=1`;
+    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/knowledge_nodes?id=eq.${nodeId}&select=id,name,normalized_name,kind,aliases,metadata&limit=1`;
     const queryResp = await fetch(queryUrl, { headers });
 
     if (!queryResp.ok) {
@@ -51,24 +46,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const rows = await queryResp.json();
     if (!Array.isArray(rows) || rows.length === 0) {
-      res.status(404).json({ error: 'Row not found' });
+      res.status(404).json({ error: 'Node not found' });
       return;
     }
 
-    const row = rows[0];
-    const text = buildEmbeddingText(row);
+    const text = buildKnowledgeNodeEmbeddingText(rows[0]);
     if (!text.trim()) {
-      res.status(200).json({ ok: true, skipped: true, message: '空内容，跳过' });
+      res.status(200).json({ ok: true, skipped: true, message: '空节点，跳过' });
       return;
     }
 
-    // 2. 生成 embedding
     const { embedding, model } = await generateEmbedding({ text, apiKey });
     const embeddingStr = `[${embedding.join(',')}]`;
 
-    // 3. 更新该行
-    const updateUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${capturedId}`;
-    const updateResp = await fetch(updateUrl, {
+    const updateResp = await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/knowledge_nodes?id=eq.${nodeId}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ embedding: embeddingStr }),
@@ -80,8 +71,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    res.status(200).json({ ok: true, id: capturedId, model });
+    res.status(200).json({ ok: true, id: nodeId, model });
   } catch (e: any) {
-    res.status(500).json({ error: 'Embed failed', detail: e.message });
+    res.status(500).json({ error: 'Graph node embed failed', detail: e.message });
   }
 }
