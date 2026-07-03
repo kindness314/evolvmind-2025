@@ -191,13 +191,13 @@ export function KnowledgePage() {
     if (searchResults.length > 0) {
       return searchResults
         .filter((result) => categoryNodeIds.has(result.id) && nodeById.has(result.id))
-        .slice(0, 10);
+        .slice(0, 16);
     }
 
     return Array.from(localMatchIds)
       .map((id) => nodeById.get(id))
       .filter((node): node is GraphNode => Boolean(node))
-      .slice(0, 10);
+      .slice(0, 16);
   }, [categoryNodeIds, localMatchIds, nodeById, searchQuery, searchResults]);
 
   const displayGraphData = useMemo(() => {
@@ -206,13 +206,44 @@ export function KnowledgePage() {
       const target = linkEndpointId(link.target);
       return categoryNodeIds.has(source) && categoryNodeIds.has(target);
     });
+    const connectedToFocusedIds = new Set<string>();
+    if (focusedNodeId) {
+      connectedToFocusedIds.add(focusedNodeId);
+      baseLinks.forEach((link) => {
+        const source = linkEndpointId(link.source);
+        const target = linkEndpointId(link.target);
+        if (source === focusedNodeId) connectedToFocusedIds.add(target);
+        if (target === focusedNodeId) connectedToFocusedIds.add(source);
+      });
+    }
 
     let visibleIds = new Set(categoryNodeIds);
-    const focusIds = selectedNodeIds.length > 0 ? new Set(selectedNodeIds) : searchQuery.trim() && matchedIds.size > 0 ? matchedIds : null;
+    let visibleLinks = baseLinks;
+
+    if (activeKind !== 'all') {
+      visibleIds = new Set(categoryNodeIds);
+      graphData.links.forEach((link) => {
+        const source = linkEndpointId(link.source);
+        const target = linkEndpointId(link.target);
+        if (categoryNodeIds.has(source) || categoryNodeIds.has(target)) {
+          visibleIds.add(source);
+          visibleIds.add(target);
+        }
+      });
+      visibleLinks = graphData.links.filter((link) => visibleIds.has(linkEndpointId(link.source)) && visibleIds.has(linkEndpointId(link.target)));
+    }
+
+    const focusIds = selectedNodeIds.length > 0
+      ? new Set(selectedNodeIds)
+      : focusedNodeId
+        ? new Set([focusedNodeId])
+        : searchQuery.trim() && matchedIds.size > 0
+          ? matchedIds
+          : null;
 
     if (focusIds) {
       visibleIds = new Set<string>();
-      baseLinks.forEach((link) => {
+      visibleLinks.forEach((link) => {
         const source = linkEndpointId(link.source);
         const target = linkEndpointId(link.target);
         if (focusIds.has(source) || focusIds.has(target)) {
@@ -225,17 +256,39 @@ export function KnowledgePage() {
       });
     }
 
+    visibleLinks = visibleLinks.filter((link) => visibleIds.has(linkEndpointId(link.source)) && visibleIds.has(linkEndpointId(link.target)));
+    const degreeMap = new Map<string, number>();
+    visibleLinks.forEach((link) => {
+      const source = linkEndpointId(link.source);
+      const target = linkEndpointId(link.target);
+      degreeMap.set(source, (degreeMap.get(source) || 0) + 1);
+      degreeMap.set(target, (degreeMap.get(target) || 0) + 1);
+    });
+
     return {
-      nodes: graphData.nodes.filter((node) => visibleIds.has(node.id)),
-      links: baseLinks.filter((link) => visibleIds.has(linkEndpointId(link.source)) && visibleIds.has(linkEndpointId(link.target))),
+      nodes: graphData.nodes
+        .filter((node) => visibleIds.has(node.id))
+        .map((node) => ({
+          ...node,
+          val: Math.max(8, Math.min(22, 8 + (degreeMap.get(node.id) || 0) * 2)),
+          isFocusedNode: focusedNodeId === node.id,
+          isConnectedToFocusedNode: connectedToFocusedIds.has(node.id),
+        })),
+      links: visibleLinks.map((link) => ({
+        source: linkEndpointId(link.source),
+        target: linkEndpointId(link.target),
+      })),
     };
-  }, [categoryNodeIds, graphData, matchedIds, searchQuery, selectedNodeIds]);
+  }, [activeKind, categoryNodeIds, focusedNodeId, graphData, matchedIds, searchQuery, selectedNodeIds]);
 
   const selectedNodes = useMemo(() => {
     return selectedNodeIds
       .map((id) => nodeById.get(id))
       .filter((node): node is GraphNode => Boolean(node));
   }, [nodeById, selectedNodeIds]);
+
+  const focusedNode = focusedNodeId ? nodeById.get(focusedNodeId) : null;
+  const hasFilteredView = Boolean(focusedNodeId || selectedNodeIds.length > 0 || searchQuery.trim() || activeKind !== 'all');
 
   const activeKeywords = useMemo(() => {
     return graphData.nodes
@@ -276,13 +329,26 @@ export function KnowledgePage() {
     }
   }, []);
 
+  const resetGraphView = useCallback(() => {
+    setFocusedNodeId(null);
+    setSelectedNodeIds([]);
+    setSearchQuery('');
+    setActiveKind('all');
+    window.setTimeout(() => {
+      fgRef.current?.zoomToFit(400, 60);
+    }, 50);
+  }, []);
+
   const focusNode = useCallback((nodeId: string) => {
     setFocusedNodeId(nodeId);
-    const node = graphData.nodes.find((n) => n.id === nodeId);
-    const fg = fgRef.current;
-    if (!node || !fg || typeof node.x !== 'number' || typeof node.y !== 'number') return;
-    fg.centerAt(node.x, node.y, 500);
-    fg.zoom(3, 500);
+    setSelectedNodeIds([]);
+    window.setTimeout(() => {
+      const node = graphData.nodes.find((n) => n.id === nodeId);
+      const fg = fgRef.current;
+      if (!node || !fg || typeof node.x !== 'number' || typeof node.y !== 'number') return;
+      fg.centerAt(node.x, node.y, 500);
+      fg.zoom(2.2, 500);
+    }, 50);
   }, [graphData.nodes]);
 
   const fetchGraphData = async () => {
@@ -381,10 +447,10 @@ export function KnowledgePage() {
                   return (
                     <div
                       key={id}
-                      className="flex-none flex items-center gap-2 px-2 py-1 bg-white text-xs border border-gray-200 shadow-sm"
+                      className="flex-none flex items-center gap-2 px-2.5 py-1 bg-white text-xs border border-gray-200 shadow-sm max-w-[280px]"
                       style={{ borderRadius: '6px' }}
                     >
-                      <button onClick={() => focusNode(id)} className="text-gray-700 hover:text-blue-600 transition-colors">
+                      <button onClick={() => focusNode(id)} className="min-w-0 truncate text-gray-700 hover:text-blue-600 transition-colors" title={name}>
                         {name}{similarity !== null ? ` · ${Math.round(similarity * 100)}%` : null}
                       </button>
                       <button
@@ -402,18 +468,32 @@ export function KnowledgePage() {
           </div>
         ) : null}
 
+        {focusedNode ? (
+          <div className="mb-3 flex items-center gap-2 text-xs">
+            <span className="text-gray-500">当前子图</span>
+            <span className="px-2 py-1 bg-amber-50 border border-amber-200 text-amber-700" style={{ borderRadius: '6px' }}>{focusedNode.name}</span>
+            <button onClick={resetGraphView} className="text-blue-600 hover:text-blue-700">返回全部</button>
+          </div>
+        ) : null}
+
         {selectedNodes.length > 0 ? (
           <div className="mb-3 flex items-center gap-2 overflow-x-auto pb-1">
             <span className="flex-none text-xs text-gray-500">已选节点</span>
             {selectedNodes.map((node) => (
-              <div key={node.id} className="flex-none flex items-center gap-1 px-2 py-1 bg-blue-50 border border-blue-200 text-xs text-blue-700" style={{ borderRadius: '6px' }}>
-                <button onClick={() => focusNode(node.id)} className="hover:text-blue-900">{node.name}</button>
+              <div key={node.id} className="flex-none flex items-center gap-1 px-2 py-1 bg-blue-50 border border-blue-200 text-xs text-blue-700 max-w-none" style={{ borderRadius: '6px' }}>
+                <button onClick={() => focusNode(node.id)} className="hover:text-blue-900 whitespace-nowrap">{node.name}</button>
                 <button onClick={() => removeSelectedNode(node.id)} aria-label="移除已选节点">
                   <X className="w-3.5 h-3.5" />
                 </button>
               </div>
             ))}
-            <button onClick={() => setSelectedNodeIds([])} className="flex-none text-xs text-gray-500 hover:text-gray-700">清空</button>
+            <button onClick={resetGraphView} className="flex-none text-xs text-gray-500 hover:text-gray-700">返回全部</button>
+          </div>
+        ) : null}
+
+        {hasFilteredView && !focusedNode && selectedNodes.length === 0 ? (
+          <div className="mb-3">
+            <button onClick={resetGraphView} className="text-xs text-blue-600 hover:text-blue-700">返回全部节点</button>
           </div>
         ) : null}
 
@@ -449,11 +529,14 @@ export function KnowledgePage() {
             const isMatched = matchedIds.has(node.id);
             const isSelected = selectedNodeIds.includes(node.id);
             const isFocused = focusedNodeId === node.id;
+            const isConnectedToFocused = Boolean(node.isConnectedToFocusedNode);
+            const shouldShowLabel = isFocused || isSelected || isMatched || (isConnectedToFocused && displayGraphData.nodes.length <= 24) || globalScale > 1.35;
             const result = searchResultMap.get(node.id);
             const baseRadius = Math.max(8, Math.min(18, 7 + Math.sqrt(node.val || 10) * 2));
             const radius = baseRadius * (isFocused ? 1.35 : isMatched || isSelected ? 1.18 : 1);
-            const label = truncateLabel(node.name, isFocused || isSelected ? 14 : 10);
+            const label = isFocused || isSelected ? node.name : truncateLabel(node.name, isConnectedToFocused ? 12 : 9);
             const fontSize = Math.max(9, Math.min(13, radius * 0.72)) / globalScale;
+            ctx.font = `600 ${fontSize}px Inter, sans-serif`;
             const labelWidth = Math.max(ctx.measureText(label).width + 14 / globalScale, radius * 2.4);
             const labelHeight = 18 / globalScale;
             const labelY = node.y + radius + 5 / globalScale;
@@ -469,6 +552,8 @@ export function KnowledgePage() {
             ctx.lineWidth = (isFocused || isSelected ? 3 : 1.5) / globalScale;
             ctx.strokeStyle = isFocused ? '#FBBF24' : isSelected ? '#2563EB' : 'rgba(255, 255, 255, 0.95)';
             ctx.stroke();
+
+            if (!shouldShowLabel) return;
 
             roundRect(ctx, node.x - labelWidth / 2, labelY, labelWidth, labelHeight, 6 / globalScale);
             ctx.fillStyle = isFocused || isSelected || isMatched ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)';
@@ -498,14 +583,14 @@ export function KnowledgePage() {
           linkColor={(link: any) => {
             const source = linkEndpointId(link.source);
             const target = linkEndpointId(link.target);
-            return matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target)
+            return matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId
               ? 'rgba(37, 99, 235, 0.62)'
               : 'rgba(148, 163, 184, 0.28)';
           }}
           linkWidth={(link: any) => {
             const source = linkEndpointId(link.source);
             const target = linkEndpointId(link.target);
-            return matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) ? 2.6 : 1.2;
+            return matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId ? 2.6 : 1.2;
           }}
           backgroundColor="#F8FAFC"
           cooldownTicks={100}

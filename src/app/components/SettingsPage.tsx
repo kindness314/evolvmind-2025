@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { Switch } from './ui/switch';
 import { createClient } from '@supabase/supabase-js';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { requestKnowledgeNodeBackfill } from '../../lib/graphSearch';
 import { requestBackfill } from '../../lib/search';
 
@@ -11,12 +11,28 @@ interface SettingsPageProps {
   onLogout?: () => void;
 }
 
+const BACKFILL_BATCH_SIZE = 5;
+const BACKFILL_WAIT_SECONDS = 70;
+const BACKFILL_RATE_LIMIT_WAIT_SECONDS = 90;
+
+function wait(seconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, seconds * 1000));
+}
+
+function isRateLimitError(error?: string) {
+  return Boolean(error && (error.includes('RateLimitExceeded') || error.includes('qpm limit exceeded') || error.includes('429')));
+}
+
 export function SettingsPage({ onLogout }: SettingsPageProps) {
   const [loggingOut, setLoggingOut] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [backfillResult, setBackfillResult] = useState<string | null>(null);
+  const [autoBackfilling, setAutoBackfilling] = useState(false);
   const [nodeBackfilling, setNodeBackfilling] = useState(false);
   const [nodeBackfillResult, setNodeBackfillResult] = useState<string | null>(null);
+  const [autoNodeBackfilling, setAutoNodeBackfilling] = useState(false);
+  const stopBackfillRef = useRef(false);
+  const stopNodeBackfillRef = useRef(false);
 
   const supabase = createClient(
     `https://${projectId}.supabase.co`,
@@ -46,12 +62,45 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
     setBackfilling(true);
     setBackfillResult(null);
     try {
-      const result = await requestBackfill(20);
-      setBackfillResult(`成功回填 ${result.processed}/${result.total} 条${result.errors?.length ? `，${result.errors.length} 条失败` : ''}`);
+      const result = await requestBackfill(BACKFILL_BATCH_SIZE);
+      const firstError = result.errors?.[0]?.error;
+      setBackfillResult(`成功回填 ${result.processed}/${result.total} 条${result.errors?.length ? `，${result.errors.length} 条失败：${firstError}` : ''}`);
     } catch (e: any) {
       setBackfillResult(`回填失败: ${e.message}`);
     } finally {
       setBackfilling(false);
+    }
+  };
+
+  const handleAutoBackfill = async () => {
+    if (autoBackfilling || backfilling) return;
+    stopBackfillRef.current = false;
+    setAutoBackfilling(true);
+    setBackfillResult('自动回填已开始，每批 5 条。');
+
+    let rounds = 0;
+    let processedTotal = 0;
+
+    try {
+      while (!stopBackfillRef.current) {
+        rounds++;
+        const result = await requestBackfill(BACKFILL_BATCH_SIZE);
+        const firstError = result.errors?.[0]?.error;
+        processedTotal += result.processed;
+
+        if (result.processed === 0 && !result.errors?.length) {
+          setBackfillResult(`自动回填完成：共处理 ${processedTotal} 条。`);
+          break;
+        }
+
+        const waitSeconds = isRateLimitError(firstError) ? BACKFILL_RATE_LIMIT_WAIT_SECONDS : BACKFILL_WAIT_SECONDS;
+        setBackfillResult(`自动回填第 ${rounds} 轮：成功 ${result.processed}/${result.total} 条，累计 ${processedTotal} 条${result.errors?.length ? `，${result.errors.length} 条失败：${firstError}` : ''}。${waitSeconds} 秒后继续。`);
+        await wait(waitSeconds);
+      }
+    } catch (e: any) {
+      setBackfillResult(`自动回填失败: ${e.message}`);
+    } finally {
+      setAutoBackfilling(false);
     }
   };
 
@@ -60,13 +109,56 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
     setNodeBackfilling(true);
     setNodeBackfillResult(null);
     try {
-      const result = await requestKnowledgeNodeBackfill(20);
-      setNodeBackfillResult(`成功回填 ${result.processed}/${result.total} 个知识节点${result.errors?.length ? `，${result.errors.length} 个失败` : ''}`);
+      const result = await requestKnowledgeNodeBackfill(BACKFILL_BATCH_SIZE);
+      const firstError = result.errors?.[0]?.error;
+      setNodeBackfillResult(`成功回填 ${result.processed}/${result.total} 个知识节点${result.errors?.length ? `，${result.errors.length} 个失败：${firstError}` : ''}`);
     } catch (e: any) {
       setNodeBackfillResult(`知识节点回填失败: ${e.message}`);
     } finally {
       setNodeBackfilling(false);
     }
+  };
+
+  const handleAutoNodeBackfill = async () => {
+    if (autoNodeBackfilling || nodeBackfilling) return;
+    stopNodeBackfillRef.current = false;
+    setAutoNodeBackfilling(true);
+    setNodeBackfillResult('自动回填知识节点已开始，每批 5 个。');
+
+    let rounds = 0;
+    let processedTotal = 0;
+
+    try {
+      while (!stopNodeBackfillRef.current) {
+        rounds++;
+        const result = await requestKnowledgeNodeBackfill(BACKFILL_BATCH_SIZE);
+        const firstError = result.errors?.[0]?.error;
+        processedTotal += result.processed;
+
+        if (result.processed === 0 && !result.errors?.length) {
+          setNodeBackfillResult(`知识节点自动回填完成：共处理 ${processedTotal} 个。`);
+          break;
+        }
+
+        const waitSeconds = isRateLimitError(firstError) ? BACKFILL_RATE_LIMIT_WAIT_SECONDS : BACKFILL_WAIT_SECONDS;
+        setNodeBackfillResult(`知识节点自动回填第 ${rounds} 轮：成功 ${result.processed}/${result.total} 个，累计 ${processedTotal} 个${result.errors?.length ? `，${result.errors.length} 个失败：${firstError}` : ''}。${waitSeconds} 秒后继续。`);
+        await wait(waitSeconds);
+      }
+    } catch (e: any) {
+      setNodeBackfillResult(`知识节点自动回填失败: ${e.message}`);
+    } finally {
+      setAutoNodeBackfilling(false);
+    }
+  };
+
+  const handleStopBackfill = () => {
+    stopBackfillRef.current = true;
+    setBackfillResult('正在停止自动回填，当前等待结束后停止。');
+  };
+
+  const handleStopNodeBackfill = () => {
+    stopNodeBackfillRef.current = true;
+    setNodeBackfillResult('正在停止知识节点自动回填，当前等待结束后停止。');
   };
 
   return (
@@ -229,7 +321,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
           <motion.button
             whileTap={{ scale: 0.95 }}
             onClick={handleBackfill}
-            disabled={backfilling}
+            disabled={backfilling || autoBackfilling}
             className="w-full px-4 py-2.5 bg-purple-500 text-white text-sm font-medium hover:bg-purple-600 transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2"
             style={{ borderRadius: '4px' }}
           >
@@ -240,6 +332,22 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
               </>
             ) : (
               '回填 Embedding 向量'
+            )}
+          </motion.button>
+          <motion.button
+            whileTap={{ scale: 0.95 }}
+            onClick={autoBackfilling ? handleStopBackfill : handleAutoBackfill}
+            disabled={backfilling}
+            className="w-full px-4 py-2.5 bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 transition-colors disabled:bg-indigo-300 flex items-center justify-center gap-2"
+            style={{ borderRadius: '4px' }}
+          >
+            {autoBackfilling ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                停止自动回填
+              </>
+            ) : (
+              '自动回填捕获内容'
             )}
           </motion.button>
           {backfillResult && (
@@ -253,7 +361,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
             <motion.button
               whileTap={{ scale: 0.95 }}
               onClick={handleNodeBackfill}
-              disabled={nodeBackfilling}
+              disabled={nodeBackfilling || autoNodeBackfilling}
               className="w-full px-4 py-2.5 bg-blue-500 text-white text-sm font-medium hover:bg-blue-600 transition-colors disabled:bg-blue-300 flex items-center justify-center gap-2"
               style={{ borderRadius: '4px' }}
             >
@@ -264,6 +372,22 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
                 </>
               ) : (
                 '回填知识节点 Embedding'
+              )}
+            </motion.button>
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              onClick={autoNodeBackfilling ? handleStopNodeBackfill : handleAutoNodeBackfill}
+              disabled={nodeBackfilling}
+              className="w-full px-4 py-2.5 bg-cyan-500 text-white text-sm font-medium hover:bg-cyan-600 transition-colors disabled:bg-cyan-300 flex items-center justify-center gap-2"
+              style={{ borderRadius: '4px' }}
+            >
+              {autoNodeBackfilling ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  停止知识节点自动回填
+                </>
+              ) : (
+                '自动回填知识节点'
               )}
             </motion.button>
             {nodeBackfillResult && (

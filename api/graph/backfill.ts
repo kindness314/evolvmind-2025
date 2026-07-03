@@ -27,7 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const batchSize = typeof req.body?.batch_size === 'number' ? Math.min(req.body.batch_size, 50) : 10;
+  const batchSize = typeof req.body?.batch_size === 'number' ? Math.min(req.body.batch_size, 5) : 5;
   const baseUrl = process.env.MINIMAX_BASE_URL;
   const headers = {
     'Content-Type': 'application/json',

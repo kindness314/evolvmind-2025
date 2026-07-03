@@ -20,6 +20,17 @@ export type VercelResponse = {
 
 export const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
 
+function getEmbeddingModels(preferredModel?: string) {
+  const configuredModel = preferredModel || process.env.MINIMAX_EMBEDDING_MODEL || '';
+  if (configuredModel) return [configuredModel];
+
+  return [
+    'embo-01',
+    'text-embedding-3-small',
+    'text-embedding-ada-002',
+  ];
+}
+
 export function stripTrailingV1(url: string) {
   return url.replace(/\/v1\/?$/, '');
 }
@@ -47,13 +58,8 @@ export async function generateEmbedding(params: {
   baseUrl?: string;
   preferredModel?: string;
 }): Promise<EmbeddingResult> {
-  const baseUrl = params.baseUrl || DEFAULT_BASE_URL;
-  const models = [
-    params.preferredModel,
-    'embo-01',
-    'text-embedding-3-small',
-    'text-embedding-ada-002',
-  ].filter(Boolean) as string[];
+  const baseUrl = params.baseUrl || process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
+  const models = getEmbeddingModels(params.preferredModel);
 
   const urlsToTry = Array.from(
     new Set([
