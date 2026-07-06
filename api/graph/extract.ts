@@ -230,10 +230,55 @@ async function callChatCompletion(params: { url: string; apiKey: string; model: 
   return { ok: resp.ok, status: resp.status, statusText: resp.statusText, text, json };
 }
 
+async function fetchModels(url: string, apiKey: string) {
+  const resp = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+  });
+  const text = await resp.text();
+  const json = safeJsonParse(text);
+  return { ok: resp.ok, status: resp.status, text, json };
+}
+
+async function tryGetAvailableModels(baseUrl: string, apiKey: string) {
+  const urlsToTry = Array.from(
+    new Set([
+      `${baseUrl.replace(/\/$/, '')}/models`,
+      `${stripTrailingV1(baseUrl).replace(/\/$/, '')}/models`,
+    ]),
+  );
+  for (const url of urlsToTry) {
+    const r = await fetchModels(url, apiKey);
+    if (!r.ok) continue;
+    const data = r.json?.data;
+    const ids = Array.isArray(data) ? data.map((m: any) => m?.id).filter(Boolean) : [];
+    return { ok: true as const, models: ids, triedUrls: urlsToTry };
+  }
+  return { ok: false as const, models: [], triedUrls: urlsToTry };
+}
+
+function getGraphModelCandidates(preferredModel: string) {
+  return Array.from(
+    new Set([
+      preferredModel,
+      'MiniMax-M2.5',
+      'MiniMax-M2.1',
+      'MiniMax-M2',
+      'abab6.5s-chat',
+      'abab6.5-chat',
+      'abab6-chat',
+    ].filter(Boolean)),
+  );
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const apiKey = process.env.MINIMAX_API_KEY || '';
   const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
   const preferredModel = process.env.MINIMAX_MODEL || '';
+
+  const candidates = getGraphModelCandidates(preferredModel);
 
   if (req.method === 'GET') {
     res.status(200).json({
@@ -242,6 +287,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       hasKey: Boolean(apiKey),
       baseUrl,
       model: preferredModel || null,
+      modelCandidates: candidates,
     });
     return;
   }
@@ -262,14 +308,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const candidates = [
-    preferredModel,
-    'abab6.5s-chat',
-    'abab6.5-chat',
-    'abab6-chat',
-    'MiniMax-M2.1',
-    'MiniMax-M2',
-  ].filter(Boolean);
+  let lastError: any = null;
 
   const urlsToTry = Array.from(
     new Set([`${baseUrl.replace(/\/$/, '')}/chat/completions`, `${stripTrailingV1(baseUrl).replace(/\/$/, '')}/chat/completions`]),
@@ -290,6 +329,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (!r.ok) {
+      const reason = r.json?.reason || r.json?.detail?.reason;
+      if (r.status === 403 && reason === 'ModelNotAllowed') {
+        lastError = r.json || { status: r.status, message: r.text };
+        continue;
+      }
       res.status(r.status).json({ error: 'AI API error', detail: r.json || r.text, model, baseUrl, triedUrls: urlsToTry });
       return;
     }
@@ -306,6 +350,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  res.status(502).json({ error: 'No model succeeded', tried: candidates });
+  const available = await tryGetAvailableModels(baseUrl, apiKey);
+  res.status(403).json({
+    error: 'ModelNotAllowed',
+    detail: lastError || null,
+    tried: candidates,
+    availableModels: available.ok ? available.models : undefined,
+    modelsLookupTriedUrls: available.triedUrls,
+  });
 }
 

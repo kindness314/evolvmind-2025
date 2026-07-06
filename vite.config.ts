@@ -12,10 +12,19 @@ export default defineConfig({
   ],
   server: {
     proxy: {
+      // Legacy dev-only proxy from the early prototype. The app should call
+      // Vercel /api/* functions instead of exposing LLM provider access here.
       '/api/llm': {
         target: 'https://api.edgefn.net/v1',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/llm/, '')
+      },
+      // Local full-stack workaround: let Vite serve the frontend while Vercel
+      // dev serves /api functions on port 3000. This avoids the SPA fallback
+      // rewrite interfering with Vite's dev-only module URLs.
+      '/api': {
+        target: 'http://127.0.0.1:3000',
+        changeOrigin: true,
       }
     }
   },

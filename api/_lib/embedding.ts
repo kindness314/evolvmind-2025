@@ -19,16 +19,11 @@ export type VercelResponse = {
 };
 
 export const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
+export const EXPECTED_EMBEDDING_DIMENSIONS = 1024;
 
 function getEmbeddingModels(preferredModel?: string) {
-  const configuredModel = preferredModel || process.env.MINIMAX_EMBEDDING_MODEL || '';
-  if (configuredModel) return [configuredModel];
-
-  return [
-    'embo-01',
-    'text-embedding-3-small',
-    'text-embedding-ada-002',
-  ];
+  const configuredModel = preferredModel || process.env.MINIMAX_EMBEDDING_MODEL || 'BAAI/bge-m3';
+  return Array.from(new Set([configuredModel].filter(Boolean)));
 }
 
 export function stripTrailingV1(url: string) {
@@ -95,7 +90,13 @@ export async function generateEmbedding(params: {
         if (!resp.ok) {
           const reason = data?.reason;
           if (resp.status === 403 && reason === 'ModelNotAllowed') {
-            lastError = data;
+            lastError = {
+              error: 'EmbeddingModelNotAllowed',
+              message: '当前 MINIMAX_API_KEY 没有该 embedding 模型权限，请配置可用的 1024 维 embedding 模型/Key 后重试。',
+              model,
+              providerError: data,
+              expectedDimensions: EXPECTED_EMBEDDING_DIMENSIONS,
+            };
             break; // 换模型
           }
           // 其他错误，记录后继续
@@ -110,6 +111,17 @@ export async function generateEmbedding(params: {
           continue;
         }
 
+        if (embedding.length !== EXPECTED_EMBEDDING_DIMENSIONS) {
+          lastError = {
+            error: 'EmbeddingDimensionMismatch',
+            message: `embedding 维度不匹配：当前数据库需要 ${EXPECTED_EMBEDDING_DIMENSIONS} 维向量。`,
+            model,
+            expected: EXPECTED_EMBEDDING_DIMENSIONS,
+            actual: embedding.length,
+          };
+          continue;
+        }
+
         return { embedding, model };
       } catch (e: any) {
         lastError = { error: e.message };
@@ -118,8 +130,15 @@ export async function generateEmbedding(params: {
     }
   }
 
+  const lastErrorText = JSON.stringify(lastError);
+  const errorPrefix = lastError?.error === 'EmbeddingModelNotAllowed'
+    ? 'EmbeddingModelNotAllowed'
+    : lastError?.error === 'EmbeddingDimensionMismatch'
+      ? 'EmbeddingDimensionMismatch'
+      : 'EmbeddingGenerationFailed';
+
   throw new Error(
-    `Embedding 生成失败: ${JSON.stringify(lastError)}. 尝试的模型: ${models.join(', ')}`,
+    `${errorPrefix}: Embedding 生成失败。当前数据库需要 ${EXPECTED_EMBEDDING_DIMENSIONS} 维向量；请配置有 /embeddings 权限且输出 ${EXPECTED_EMBEDDING_DIMENSIONS} 维的模型/Key。尝试的模型: ${models.join(', ')}. 最后错误: ${lastErrorText}`,
   );
 }
 

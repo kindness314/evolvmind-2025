@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .vercel/
+supabase/.temp/
 .env
 .env.local
 .env.*.local
@@ -9,3 +10,5 @@ dist/
 Thumbs.db
 .vscode/
 .trae/
+
+.env*

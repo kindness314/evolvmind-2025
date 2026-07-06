@@ -248,15 +248,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const candidates = [
+  const candidates = Array.from(new Set([
     preferredModel,
+    'MiniMax-M2.5',
+    'MiniMax-M2.1',
+    'MiniMax-M2',
     'abab6.5s-chat',
     'abab6.5-chat',
     'abab6-chat',
-    'MiniMax-M2.1',
-    'MiniMax-M2',
     'gpt-3.5-turbo',
-  ].filter(Boolean);
+  ].filter(Boolean)));
 
   let lastError: any = null;
 

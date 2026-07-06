@@ -47,15 +47,48 @@ function truncateLabel(label: string, maxLength: number) {
   return label.length > maxLength ? `${label.slice(0, maxLength)}…` : label;
 }
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
-  const r = Math.min(radius, width / 2, height / 2);
+function hexagonPath(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number) {
   ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + width, y, x + width, y + height, r);
-  ctx.arcTo(x + width, y + height, x, y + height, r);
-  ctx.arcTo(x, y + height, x, y, r);
-  ctx.arcTo(x, y, x + width, y, r);
+  for (let i = 0; i < 6; i++) {
+    const angle = (Math.PI / 3) * i - Math.PI / 2;
+    const px = x + radius * Math.cos(angle);
+    const py = y + radius * Math.sin(angle);
+    if (i === 0) {
+      ctx.moveTo(px, py);
+    } else {
+      ctx.lineTo(px, py);
+    }
+  }
   ctx.closePath();
+}
+
+function buildAdjacencyMap(links: GraphLink[]) {
+  const adjacency = new Map<string, Set<string>>();
+  links.forEach((link) => {
+    const source = linkEndpointId(link.source);
+    const target = linkEndpointId(link.target);
+    if (!adjacency.has(source)) adjacency.set(source, new Set());
+    if (!adjacency.has(target)) adjacency.set(target, new Set());
+    adjacency.get(source)!.add(target);
+    adjacency.get(target)!.add(source);
+  });
+  return adjacency;
+}
+
+function getConnectedComponentNodeIds(startId: string, links: GraphLink[]) {
+  const adjacency = buildAdjacencyMap(links);
+  const component = new Set<string>([startId]);
+  const queue = [startId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    adjacency.get(current)?.forEach((neighbor) => {
+      if (!component.has(neighbor)) {
+        component.add(neighbor);
+        queue.push(neighbor);
+      }
+    });
+  }
+  return component;
 }
 
 export function KnowledgePage() {
@@ -201,62 +234,27 @@ export function KnowledgePage() {
   }, [categoryNodeIds, localMatchIds, nodeById, searchQuery, searchResults]);
 
   const displayGraphData = useMemo(() => {
-    const baseLinks = graphData.links.filter((link) => {
-      const source = linkEndpointId(link.source);
-      const target = linkEndpointId(link.target);
-      return categoryNodeIds.has(source) && categoryNodeIds.has(target);
-    });
-    const connectedToFocusedIds = new Set<string>();
-    if (focusedNodeId) {
-      connectedToFocusedIds.add(focusedNodeId);
-      baseLinks.forEach((link) => {
-        const source = linkEndpointId(link.source);
-        const target = linkEndpointId(link.target);
-        if (source === focusedNodeId) connectedToFocusedIds.add(target);
-        if (target === focusedNodeId) connectedToFocusedIds.add(source);
-      });
-    }
+    const centerNodeId = focusedNodeId || selectedNodeIds[0] || null;
 
-    let visibleIds = new Set(categoryNodeIds);
-    let visibleLinks = baseLinks;
+    let visibleIds: Set<string>;
+    let visibleLinks: GraphLink[];
 
     if (activeKind !== 'all') {
+      // 分类模式：只显示该分类节点，不显示关系边和邻居
       visibleIds = new Set(categoryNodeIds);
-      graphData.links.forEach((link) => {
-        const source = linkEndpointId(link.source);
-        const target = linkEndpointId(link.target);
-        if (categoryNodeIds.has(source) || categoryNodeIds.has(target)) {
-          visibleIds.add(source);
-          visibleIds.add(target);
-        }
-      });
-      visibleLinks = graphData.links.filter((link) => visibleIds.has(linkEndpointId(link.source)) && visibleIds.has(linkEndpointId(link.target)));
+      visibleLinks = [];
+    } else if (centerNodeId) {
+      // 节点中心模式：显示该节点所在完整连通分量及分量内部所有边
+      visibleIds = getConnectedComponentNodeIds(centerNodeId, graphData.links);
+      visibleLinks = graphData.links.filter(
+        (link) => visibleIds.has(linkEndpointId(link.source)) && visibleIds.has(linkEndpointId(link.target))
+      );
+    } else {
+      // 默认模式：全部节点和全部边；搜索只高亮，不收缩图
+      visibleIds = new Set(graphData.nodes.map((node) => node.id));
+      visibleLinks = graphData.links;
     }
 
-    const focusIds = selectedNodeIds.length > 0
-      ? new Set(selectedNodeIds)
-      : focusedNodeId
-        ? new Set([focusedNodeId])
-        : searchQuery.trim() && matchedIds.size > 0
-          ? matchedIds
-          : null;
-
-    if (focusIds) {
-      visibleIds = new Set<string>();
-      visibleLinks.forEach((link) => {
-        const source = linkEndpointId(link.source);
-        const target = linkEndpointId(link.target);
-        if (focusIds.has(source) || focusIds.has(target)) {
-          visibleIds.add(source);
-          visibleIds.add(target);
-        }
-      });
-      focusIds.forEach((id) => {
-        if (categoryNodeIds.has(id)) visibleIds.add(id);
-      });
-    }
-
-    visibleLinks = visibleLinks.filter((link) => visibleIds.has(linkEndpointId(link.source)) && visibleIds.has(linkEndpointId(link.target)));
     const degreeMap = new Map<string, number>();
     visibleLinks.forEach((link) => {
       const source = linkEndpointId(link.source);
@@ -270,16 +268,15 @@ export function KnowledgePage() {
         .filter((node) => visibleIds.has(node.id))
         .map((node) => ({
           ...node,
-          val: Math.max(8, Math.min(22, 8 + (degreeMap.get(node.id) || 0) * 2)),
-          isFocusedNode: focusedNodeId === node.id,
-          isConnectedToFocusedNode: connectedToFocusedIds.has(node.id),
+          val: Math.max(6, Math.min(14, 6 + (degreeMap.get(node.id) || 0))),
+          isCenterNode: centerNodeId === node.id,
         })),
       links: visibleLinks.map((link) => ({
         source: linkEndpointId(link.source),
         target: linkEndpointId(link.target),
       })),
     };
-  }, [activeKind, categoryNodeIds, focusedNodeId, graphData, matchedIds, searchQuery, selectedNodeIds]);
+  }, [activeKind, categoryNodeIds, focusedNodeId, graphData, selectedNodeIds]);
 
   const selectedNodes = useMemo(() => {
     return selectedNodeIds
@@ -300,7 +297,10 @@ export function KnowledgePage() {
   }, [categoryNodeIds, graphData.nodes]);
 
   const addSelectedNode = useCallback((nodeId: string) => {
-    setSelectedNodeIds((current) => (current.includes(nodeId) ? current : [...current, nodeId]));
+    // 单节点中心选择：进入该节点所在连通分量
+    setSelectedNodeIds([nodeId]);
+    setFocusedNodeId(null);
+    setActiveKind('all');
   }, []);
 
   const removeSelectedNode = useCallback((nodeId: string) => {
@@ -339,15 +339,28 @@ export function KnowledgePage() {
     }, 50);
   }, []);
 
+  const handleCategorySelect = useCallback((kind: string) => {
+    setActiveKind(kind);
+    setFocusedNodeId(null);
+    setSelectedNodeIds([]);
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchError(null);
+    window.setTimeout(() => {
+      fgRef.current?.zoomToFit(400, 60);
+    }, 120);
+  }, []);
+
   const focusNode = useCallback((nodeId: string) => {
     setFocusedNodeId(nodeId);
     setSelectedNodeIds([]);
+    setActiveKind('all');
     window.setTimeout(() => {
       const node = graphData.nodes.find((n) => n.id === nodeId);
       const fg = fgRef.current;
       if (!node || !fg || typeof node.x !== 'number' || typeof node.y !== 'number') return;
       fg.centerAt(node.x, node.y, 500);
-      fg.zoom(2.2, 500);
+      fg.zoom(1.4, 500);
     }, 50);
   }, [graphData.nodes]);
 
@@ -529,55 +542,50 @@ export function KnowledgePage() {
             const isMatched = matchedIds.has(node.id);
             const isSelected = selectedNodeIds.includes(node.id);
             const isFocused = focusedNodeId === node.id;
-            const isConnectedToFocused = Boolean(node.isConnectedToFocusedNode);
-            const shouldShowLabel = isFocused || isSelected || isMatched || (isConnectedToFocused && displayGraphData.nodes.length <= 24) || globalScale > 1.35;
-            const result = searchResultMap.get(node.id);
-            const baseRadius = Math.max(8, Math.min(18, 7 + Math.sqrt(node.val || 10) * 2));
-            const radius = baseRadius * (isFocused ? 1.35 : isMatched || isSelected ? 1.18 : 1);
-            const label = isFocused || isSelected ? node.name : truncateLabel(node.name, isConnectedToFocused ? 12 : 9);
-            const fontSize = Math.max(9, Math.min(13, radius * 0.72)) / globalScale;
-            ctx.font = `600 ${fontSize}px Inter, sans-serif`;
-            const labelWidth = Math.max(ctx.measureText(label).width + 14 / globalScale, radius * 2.4);
-            const labelHeight = 18 / globalScale;
-            const labelY = node.y + radius + 5 / globalScale;
+            const isCenter = isFocused || isSelected;
+            const baseRadius = Math.max(5, Math.min(10, 4 + Math.sqrt(node.val || 6) * 1.5));
+            const radius = baseRadius * (isCenter ? 1.15 : isMatched ? 1.1 : 1);
 
-            ctx.shadowColor = isFocused || isSelected ? 'rgba(37, 99, 235, 0.35)' : 'rgba(15, 23, 42, 0.18)';
-            ctx.shadowBlur = (isFocused || isSelected ? 14 : 8) / globalScale;
-            ctx.beginPath();
-            ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI);
+            ctx.shadowColor = isCenter ? 'rgba(37, 99, 235, 0.4)' : 'rgba(15, 23, 42, 0.15)';
+            ctx.shadowBlur = (isCenter ? 12 : 6) / globalScale;
+            hexagonPath(ctx, node.x, node.y, radius);
             ctx.fillStyle = isMatched ? '#7C3AED' : node.color;
             ctx.fill();
             ctx.shadowBlur = 0;
 
-            ctx.lineWidth = (isFocused || isSelected ? 3 : 1.5) / globalScale;
+            ctx.lineWidth = (isCenter ? 2.5 : 1.2) / globalScale;
             ctx.strokeStyle = isFocused ? '#FBBF24' : isSelected ? '#2563EB' : 'rgba(255, 255, 255, 0.95)';
+            hexagonPath(ctx, node.x, node.y, radius);
             ctx.stroke();
 
-            if (!shouldShowLabel) return;
+            // 六边形内动态文字：大小和字符数随节点大小与缩放变化
+            const maxChars = isCenter || isMatched
+              ? Math.max(4, Math.round(radius * 0.8))
+              : Math.max(2, Math.round(radius * 0.5));
+            const label = truncateLabel(node.name, maxChars);
+            const innerWidth = radius * 1.6;
+            const fontSize = Math.min(radius * 0.6, innerWidth / Math.max(label.length, 1));
+            if (fontSize * globalScale >= 5 || isCenter) {
+              ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillStyle = '#ffffff';
+              ctx.fillText(label, node.x, node.y);
+            }
 
-            roundRect(ctx, node.x - labelWidth / 2, labelY, labelWidth, labelHeight, 6 / globalScale);
-            ctx.fillStyle = isFocused || isSelected || isMatched ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)';
-            ctx.fill();
-            ctx.lineWidth = 1 / globalScale;
-            ctx.strokeStyle = isFocused || isSelected || isMatched ? 'rgba(15, 23, 42, 0.2)' : 'rgba(148, 163, 184, 0.35)';
-            ctx.stroke();
-
-            ctx.font = `600 ${fontSize}px Inter, sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillStyle = isFocused || isSelected || isMatched ? '#ffffff' : '#1F2937';
-            ctx.fillText(label, node.x, labelY + labelHeight / 2);
-
+            const result = searchResultMap.get(node.id);
             if (result) {
               ctx.fillStyle = '#6B7280';
-              ctx.font = `${10 / globalScale}px Inter, sans-serif`;
-              ctx.fillText(`${Math.round(result.similarity * 100)}%`, node.x, labelY + labelHeight + 10 / globalScale);
+              ctx.font = `${9 / globalScale}px Inter, sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(`${Math.round(result.similarity * 100)}%`, node.x, node.y + radius + 8 / globalScale);
             }
           }}
           nodePointerAreaPaint={(node: any, color: string, ctx: CanvasRenderingContext2D) => {
+            const baseRadius = Math.max(5, Math.min(10, 4 + Math.sqrt(node.val || 6) * 1.5));
             ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(node.x, node.y, Math.max(16, (node.val || 10) * 0.9), 0, 2 * Math.PI);
+            hexagonPath(ctx, node.x, node.y, Math.max(9, baseRadius * 1.4));
             ctx.fill();
           }}
           linkColor={(link: any) => {
@@ -634,7 +642,7 @@ export function KnowledgePage() {
             {categoryItems.map((item) => (
               <button
                 key={item.kind}
-                onClick={() => setActiveKind(item.kind)}
+                onClick={() => handleCategorySelect(item.kind)}
                 className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 text-left text-xs transition-colors ${activeKind === item.kind ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50'}`}
                 style={{ borderRadius: '6px' }}
               >

@@ -23,6 +23,18 @@ function isRateLimitError(error?: string) {
   return Boolean(error && (error.includes('RateLimitExceeded') || error.includes('qpm limit exceeded') || error.includes('429')));
 }
 
+function formatBackfillError(error?: string) {
+  if (!error) return '';
+  if (isRateLimitError(error)) return '模型服务限流，稍后会自动重试';
+  if (error.includes('EmbeddingModelNotAllowed') || error.includes('ModelNotAllowed')) {
+    return '当前服务端 Key 没有 embedding 模型权限，请配置可用的 1024 维 embedding 模型/Key 后重试';
+  }
+  if (error.includes('EmbeddingDimensionMismatch')) {
+    return 'embedding 维度不匹配：当前数据库需要 1024 维向量，请使用兼容模型';
+  }
+  return error.length > 180 ? `${error.slice(0, 180)}...` : error;
+}
+
 export function SettingsPage({ onLogout }: SettingsPageProps) {
   const [loggingOut, setLoggingOut] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
@@ -64,7 +76,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
     try {
       const result = await requestBackfill(BACKFILL_BATCH_SIZE);
       const firstError = result.errors?.[0]?.error;
-      setBackfillResult(`成功回填 ${result.processed}/${result.total} 条${result.errors?.length ? `，${result.errors.length} 条失败：${firstError}` : ''}`);
+      setBackfillResult(`成功回填 ${result.processed}/${result.total} 条${result.errors?.length ? `，${result.errors.length} 条失败：${formatBackfillError(firstError)}` : ''}`);
     } catch (e: any) {
       setBackfillResult(`回填失败: ${e.message}`);
     } finally {
@@ -94,7 +106,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
         }
 
         const waitSeconds = isRateLimitError(firstError) ? BACKFILL_RATE_LIMIT_WAIT_SECONDS : BACKFILL_WAIT_SECONDS;
-        setBackfillResult(`自动回填第 ${rounds} 轮：成功 ${result.processed}/${result.total} 条，累计 ${processedTotal} 条${result.errors?.length ? `，${result.errors.length} 条失败：${firstError}` : ''}。${waitSeconds} 秒后继续。`);
+        setBackfillResult(`自动回填第 ${rounds} 轮：成功 ${result.processed}/${result.total} 条，累计 ${processedTotal} 条${result.errors?.length ? `，${result.errors.length} 条失败：${formatBackfillError(firstError)}` : ''}。${waitSeconds} 秒后继续。`);
         await wait(waitSeconds);
       }
     } catch (e: any) {
@@ -111,7 +123,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
     try {
       const result = await requestKnowledgeNodeBackfill(BACKFILL_BATCH_SIZE);
       const firstError = result.errors?.[0]?.error;
-      setNodeBackfillResult(`成功回填 ${result.processed}/${result.total} 个知识节点${result.errors?.length ? `，${result.errors.length} 个失败：${firstError}` : ''}`);
+      setNodeBackfillResult(`成功回填 ${result.processed}/${result.total} 个知识节点${result.errors?.length ? `，${result.errors.length} 个失败：${formatBackfillError(firstError)}` : ''}`);
     } catch (e: any) {
       setNodeBackfillResult(`知识节点回填失败: ${e.message}`);
     } finally {
@@ -141,7 +153,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
         }
 
         const waitSeconds = isRateLimitError(firstError) ? BACKFILL_RATE_LIMIT_WAIT_SECONDS : BACKFILL_WAIT_SECONDS;
-        setNodeBackfillResult(`知识节点自动回填第 ${rounds} 轮：成功 ${result.processed}/${result.total} 个，累计 ${processedTotal} 个${result.errors?.length ? `，${result.errors.length} 个失败：${firstError}` : ''}。${waitSeconds} 秒后继续。`);
+        setNodeBackfillResult(`知识节点自动回填第 ${rounds} 轮：成功 ${result.processed}/${result.total} 个，累计 ${processedTotal} 个${result.errors?.length ? `，${result.errors.length} 个失败：${formatBackfillError(firstError)}` : ''}。${waitSeconds} 秒后继续。`);
         await wait(waitSeconds);
       }
     } catch (e: any) {

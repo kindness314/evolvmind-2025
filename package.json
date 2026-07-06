@@ -1,11 +1,14 @@
 {
-  "name": "@figma/my-make-file",
+  "name": "evolvmind",
   "private": true,
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev:api": "node scripts/dev-api.js",
+    "dev:full": "node scripts/dev-full.js",
     "build": "vite build",
-    "dev": "vite"
+    "preview": "vite preview"
   },
   "dependencies": {
     "react": "18.3.1",

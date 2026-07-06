@@ -1,6 +1,9 @@
 node_modules
 build
 dist
+.env
+.env.*
+supabase/.temp
 .git
 .trae
 .log
