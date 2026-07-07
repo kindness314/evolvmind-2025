@@ -93,6 +93,7 @@ function getConnectedComponentNodeIds(startId: string, links: GraphLink[]) {
 
 export function KnowledgePage() {
   const fgRef = useRef<any>();
+  const graphAreaRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [setupStatus, setSetupStatus] = useState<GraphSetupStatus | null>(null);
@@ -115,9 +116,10 @@ export function KnowledgePage() {
       .catch((e) => setSetupStatus({ schemaOk: false, llmOk: false, schemaError: String(e), llmError: String(e) }));
 
     const updateDimensions = () => {
+      const graphArea = graphAreaRef.current;
       setDimensions({
-        width: window.innerWidth,
-        height: window.innerHeight - 180
+        width: graphArea?.clientWidth || Math.min(window.innerWidth, 448),
+        height: graphArea?.clientHeight || window.innerHeight - 180
       });
     };
 
@@ -355,14 +357,46 @@ export function KnowledgePage() {
     setFocusedNodeId(nodeId);
     setSelectedNodeIds([]);
     setActiveKind('all');
-    window.setTimeout(() => {
-      const node = graphData.nodes.find((n) => n.id === nodeId);
+  }, []);
+
+  useEffect(() => {
+    const centerNodeId = focusedNodeId || selectedNodeIds[0];
+    if (!centerNodeId) return;
+
+    const centerFocusedNode = () => {
+      const node = displayGraphData.nodes.find((n) => n.id === centerNodeId);
       const fg = fgRef.current;
-      if (!node || !fg || typeof node.x !== 'number' || typeof node.y !== 'number') return;
-      fg.centerAt(node.x, node.y, 500);
-      fg.zoom(1.4, 500);
-    }, 50);
-  }, [graphData.nodes]);
+      const graphArea = graphAreaRef.current;
+      if (!node || !fg || !graphArea || typeof node.x !== 'number' || typeof node.y !== 'number') return false;
+
+      const zoom = 1.45;
+      const graphBounds = graphArea.getBoundingClientRect();
+      const targetScreenX = graphBounds.width / 2;
+      const targetScreenY = graphBounds.height / 2;
+      const currentScreen = fg.graph2ScreenCoords(node.x, node.y);
+      const screenCenter = fg.screen2GraphCoords(targetScreenX, targetScreenY);
+      const nodeAtTarget = fg.screen2GraphCoords(
+        targetScreenX + (currentScreen.x - targetScreenX),
+        targetScreenY + (currentScreen.y - targetScreenY)
+      );
+      const offsetX = nodeAtTarget.x - screenCenter.x;
+      const offsetY = nodeAtTarget.y - screenCenter.y;
+
+      fg.zoom(zoom, 300);
+      fg.centerAt(node.x + offsetX, node.y + offsetY, 500);
+      return true;
+    };
+
+    const timeouts = [80, 220, 520, 900].map((delay) =>
+      window.setTimeout(() => {
+        centerFocusedNode();
+      }, delay)
+    );
+
+    return () => {
+      timeouts.forEach(window.clearTimeout);
+    };
+  }, [displayGraphData.nodes, focusedNodeId, selectedNodeIds]);
 
   const fetchGraphData = async () => {
     setLoading(true);
@@ -524,7 +558,7 @@ export function KnowledgePage() {
         </div>
       </div>
 
-      <div className="flex-1 relative bg-slate-50">
+      <div ref={graphAreaRef} className="flex-1 relative bg-slate-50">
         {loading ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-gray-50/80">
             <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-2" />
