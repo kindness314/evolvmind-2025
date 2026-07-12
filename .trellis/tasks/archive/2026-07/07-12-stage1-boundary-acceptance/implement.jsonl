@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend workflow and verification gates"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Navigation and scope ownership"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Error, empty-state and security verification"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Request and response boundary validation"}

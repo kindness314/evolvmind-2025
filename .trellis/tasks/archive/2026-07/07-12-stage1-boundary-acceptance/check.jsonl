@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Completion checklist"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Accessible empty/error interaction review"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Focused browser and API checks"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Frontend/API/Supabase contract verification"}
