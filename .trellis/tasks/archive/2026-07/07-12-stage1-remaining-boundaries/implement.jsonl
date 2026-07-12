@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/state-management.md","reason":"Composed filter and asynchronous period state"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Graph focus and responsive controls"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Race and boundary verification"}
