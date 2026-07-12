@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend workflow and completion gates"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Interactive cards, responsive graph controls and errors"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Period, recommendation and graph-filter state"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Focused browser failure and boundary verification"}

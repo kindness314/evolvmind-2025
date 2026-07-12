@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Completion checklist"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Responsive and accessible interaction review"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"State transition review"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Behavioral verification and failure isolation"}
