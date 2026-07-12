@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend pre-development and quality gates"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"State-driven navigation and demo/auth scope ownership"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Typed API and runtime trust boundaries"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Security, verification and error-state requirements"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Frontend, API and Supabase contract review"}

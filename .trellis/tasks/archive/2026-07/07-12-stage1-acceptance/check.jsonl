@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend completion checklist"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Navigation and responsive interaction review"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"API response and authorization boundary review"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Security and focused behavioral verification"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"End-to-end contract verification"}
