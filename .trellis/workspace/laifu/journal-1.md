@@ -152,3 +152,20 @@ Verified graph search/time composition and focus/time contract; P3 race reviewed
 ### Next Steps
 
 - None - task complete
+
+## Session 5: User-scope production migration and pending acceptance
+
+### Completed
+
+- Applied `20260713000000_secure_user_scope_and_storage.sql` to Supabase project `wocchwrvlhqdwtvfwfab`.
+- Added and applied `20260713000500_restore_captured_files_bucket.sql` because the existing remote environment lacked `captured-files`; the bucket is now private.
+- Verified remote migration history is up to date, anonymous real-user filtering returns no rows, Demo-scope Storage upload works, and public Storage access is disabled.
+- `npm run typecheck`, `npm run build`, and Trellis context validation passed.
+
+### Pending User Acceptance — Reminder
+
+- User must run the real-account acceptance flow in `.trellis/tasks/07-13-user-scope-upload-security/implement.md` under `待用户执行：真实账户隔离验收`.
+- Prepare two disposable phone accounts (A/B), enable Supabase Phone Auth + SMS provider, and use separate browser sessions.
+- Required checks: A/B data, search, recommendations, graph, and Storage are mutually isolated; forged `user_id/scope_id` request fields cannot override the Bearer scope; upload size/type boundaries reject invalid files.
+- Do not mark the security closure fully accepted until the two-account cross-isolation checks pass.
+***

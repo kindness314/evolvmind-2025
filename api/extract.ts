@@ -216,9 +216,15 @@ async function tryGetAvailableModels(baseUrl: string, apiKey: string) {
   return { ok: false as const, models: [], triedUrls: urlsToTry };
 }
 
+const NON_CHAT_PATTERNS = [/bge/i, /reranker/i];
+function isNonChatModel(model: string) {
+  return NON_CHAT_PATTERNS.some((p) => p.test(model));
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const apiKey = process.env.MINIMAX_API_KEY || '';
+  const apiKey = process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
   const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
+
   const preferredModel = process.env.MINIMAX_MODEL || '';
 
   if (req.method === 'GET') {
@@ -238,7 +244,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (!apiKey) {
-    res.status(500).json({ error: 'Missing MINIMAX_API_KEY on server' });
+    res.status(500).json({ error: 'Missing MINIMAX_CHAT_API_KEY (or MINIMAX_API_KEY) on server' });
     return;
   }
 
@@ -250,6 +256,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const candidates = Array.from(new Set([
     preferredModel,
+    'DeepSeek-V4-Pro',
+    'DeepSeek-V3',
+    'MiniMax-M3',
     'MiniMax-M2.5',
     'MiniMax-M2.1',
     'MiniMax-M2',
@@ -307,7 +316,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  // Dynamic fallback: try models from the provider's /models endpoint
   const available = await tryGetAvailableModels(baseUrl, apiKey);
+  if (available.ok && available.models.length > 0) {
+    const triedSet = new Set(candidates);
+    const dynamicModels = available.models.filter((m: string) => !triedSet.has(m) && !isNonChatModel(m)).slice(0, 5);
+
+    for (const model of dynamicModels) {
+      let r: Awaited<ReturnType<typeof callChatCompletion>> | null = null;
+
+      for (const url of urlsToTry) {
+        r = await callChatCompletion({ url, apiKey, model, content });
+        if (!r.ok && r.status === 404) continue;
+        break;
+      }
+
+      if (!r) continue;
+
+      if (!r.ok) {
+        const reason = r.json?.reason;
+        if (r.status === 403 && reason === 'ModelNotAllowed') {
+          lastError = r.json || { status: r.status, message: r.text };
+          continue;
+        }
+        res.status(r.status).json({ error: 'AI API error', detail: r.json || r.text, model, baseUrl, triedUrls: urlsToTry });
+        return;
+      }
+
+      const contentStr = r.json?.choices?.[0]?.message?.content;
+      const extracted = normalizeContentToJson(contentStr);
+      if (!extracted) {
+        res.status(502).json({ error: 'Invalid AI response format', raw: contentStr, model });
+        return;
+      }
+
+      res.status(200).json({ data: normalizeExtractedInfo(extracted), model });
+      return;
+    }
+  }
+
   res.status(403).json({
     error: 'ModelNotAllowed',
     detail: lastError || null,

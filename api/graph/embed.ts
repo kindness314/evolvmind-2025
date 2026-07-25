@@ -1,4 +1,5 @@
 import { buildKnowledgeNodeEmbeddingText, generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
+import { resolveRequestScope } from '../_lib/requestScope.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
@@ -22,20 +23,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  let requestScope;
+  try {
+    requestScope = await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+  } catch (e: unknown) {
+    res.status(401).json({ error: e instanceof Error ? e.message : 'Authentication required' });
+    return;
+  }
+
+  const requestSupabaseKey = requestScope.accessToken ? SUPABASE_ANON_KEY : supabaseKey;
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey: requestSupabaseKey,
+    Authorization: `Bearer ${requestScope.accessToken || requestSupabaseKey}`,
+  };
   const nodeId = typeof req.body?.node_id === 'string' ? req.body.node_id : '';
   if (!nodeId) {
     res.status(400).json({ error: 'Missing node_id' });
     return;
   }
 
-  const headers = {
-    'Content-Type': 'application/json',
-    apikey: supabaseKey,
-    Authorization: `Bearer ${supabaseKey}`,
-  };
-
   try {
-    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/knowledge_nodes?id=eq.${nodeId}&select=id,name,normalized_name,kind,aliases,metadata&limit=1`;
+    const scopeQuery = `scope_id=eq.${encodeURIComponent(requestScope.scopeId)}`;
+    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/knowledge_nodes?id=eq.${nodeId}&${scopeQuery}&select=id,name,normalized_name,kind,aliases,metadata&limit=1`;
     const queryResp = await fetch(queryUrl, { headers });
 
     if (!queryResp.ok) {

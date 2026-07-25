@@ -1,6 +1,8 @@
-import { Search, ZoomIn, ZoomOut, Maximize2, Loader2, Sparkles, Plus, X } from 'lucide-react';
+import { Search, ZoomIn, ZoomOut, Maximize2, Loader2, Sparkles, Plus, X, ExternalLink, Network } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { toast } from 'sonner';
 import { useRef, useCallback, useState, useEffect, useMemo } from 'react';
-import ForceGraph2D from 'react-force-graph-2d';
+import ForceGraph2D, { type ForceGraphMethods } from 'react-force-graph-2d';
 import { supabase } from '../../lib/supabase';
 import { checkGraphSetup, type GraphSetupStatus } from '../../lib/graph';
 import { semanticSearchKnowledgeNodes, type KnowledgeNodeSearchResult } from '../../lib/graphSearch';
@@ -12,14 +14,41 @@ interface GraphNode {
   color: string;
   kind?: string;
   aliases?: string[];
+  source_captured_ids?: string[];
+  metadata?: Record<string, unknown>;
   x?: number;
   y?: number;
+  created_at?: string | null;
 }
 
 interface GraphLink {
+  id?: string;
   source: string | GraphNode;
   target: string | GraphNode;
+  relation_type?: string | null;
+  evidence_captured_ids?: string[];
+  confidence?: number | null;
+  created_at?: string | null;
 }
+
+interface CapturedSource {
+  id: string;
+  title: string;
+  type?: string | null;
+  summary?: string | null;
+  content?: string | null;
+  created_at?: string | null;
+}
+
+interface NodeRelation {
+  id?: string;
+  source: string;
+  target: string;
+  relation_type?: string | null;
+  evidence_captured_ids?: string[];
+  confidence?: number | null;
+}
+
 
 const NODE_KIND_META: Record<string, { label: string; color: string }> = {
   concept: { label: '概念', color: '#3B82F6' },
@@ -34,6 +63,26 @@ const NODE_KIND_META: Record<string, { label: string; color: string }> = {
   location: { label: '地点', color: '#14B8A6' },
   unknown: { label: '未分类', color: '#64748B' },
 };
+
+const RELATION_TYPE_LABELS: Record<string, string> = {
+  related_to: '相关',
+  part_of: '属于',
+  causes: '导致',
+  supports: '支持',
+  contradicts: '矛盾',
+  example_of: '示例',
+  depends_on: '依赖',
+  leads_to: '导向',
+  similar_to: '相似',
+  opposite_of: '对立',
+};
+
+function getRelationLabel(relationType: string | null | undefined): string {
+  if (relationType && RELATION_TYPE_LABELS[relationType]) {
+    return RELATION_TYPE_LABELS[relationType];
+  }
+  return relationType || '相关内容';
+}
 
 function linkEndpointId(endpoint: string | GraphNode) {
   return typeof endpoint === 'string' ? endpoint : endpoint.id;
@@ -91,9 +140,23 @@ function getConnectedComponentNodeIds(startId: string, links: GraphLink[]) {
   return component;
 }
 
-export function KnowledgePage() {
-  const fgRef = useRef<any>();
+export interface KnowledgePageProps {
+  initialNodeId?: string | null;
+  onNavigate?: (page: string, itemId?: string) => void;
+}
+
+interface NodeDetailState {
+  node: GraphNode;
+  sources: CapturedSource[];
+  relations: NodeRelation[];
+  loading: boolean;
+  error: string | null;
+}
+
+export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps) {
+  const fgRef = useRef<ForceGraphMethods<GraphNode, GraphLink> | undefined>(undefined);
   const graphAreaRef = useRef<HTMLDivElement>(null);
+  const viewportFrameRef = useRef<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [setupStatus, setSetupStatus] = useState<GraphSetupStatus | null>(null);
@@ -108,24 +171,29 @@ export function KnowledgePage() {
   const [activeKind, setActiveKind] = useState<string>('all');
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
-
+  const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
+  const [nodeDetail, setNodeDetail] = useState<NodeDetailState | null>(null);
+  const [timeRange, setTimeRange] = useState<'all' | '7d' | '30d'>('all');
   useEffect(() => {
     fetchGraphData();
     void checkGraphSetup()
       .then(setSetupStatus)
       .catch((e) => setSetupStatus({ schemaOk: false, llmOk: false, schemaError: String(e), llmError: String(e) }));
 
+    const graphArea = graphAreaRef.current;
+    if (!graphArea) return;
+
     const updateDimensions = () => {
-      const graphArea = graphAreaRef.current;
       setDimensions({
-        width: graphArea?.clientWidth || Math.min(window.innerWidth, 448),
-        height: graphArea?.clientHeight || window.innerHeight - 180
+        width: graphArea.clientWidth,
+        height: graphArea.clientHeight,
       });
     };
 
     updateDimensions();
-    window.addEventListener('resize', updateDimensions);
-    return () => window.removeEventListener('resize', updateDimensions);
+    const resizeObserver = new ResizeObserver(updateDimensions);
+    resizeObserver.observe(graphArea);
+    return () => resizeObserver.disconnect();
   }, []);
 
   useEffect(() => {
@@ -146,10 +214,10 @@ export function KnowledgePage() {
           setSearchResults(results);
           setSearchError(null);
         })
-        .catch((e: any) => {
+        .catch((e: unknown) => {
           if (cancelled) return;
           setSearchResults([]);
-          setSearchError(e.message || '语义搜索失败');
+          setSearchError(e instanceof Error ? e.message : '语义搜索失败');
         })
         .finally(() => {
           if (!cancelled) setSearching(false);
@@ -165,6 +233,41 @@ export function KnowledgePage() {
   const nodeById = useMemo(() => {
     return new Map(graphData.nodes.map((node) => [node.id, node]));
   }, [graphData.nodes]);
+  useEffect(() => {
+    let cancelled = false;
+    const loadNodeDetail = async () => {
+      if (!detailNodeId) {
+        setNodeDetail(null);
+        return;
+      }
+      const node = nodeById.get(detailNodeId);
+      if (!node) return;
+      const relations = graphData.links
+        .filter((link) => linkEndpointId(link.source) === node.id || linkEndpointId(link.target) === node.id)
+        .map((link) => ({ id: link.id, source: linkEndpointId(link.source), target: linkEndpointId(link.target), relation_type: link.relation_type, evidence_captured_ids: link.evidence_captured_ids || [], confidence: link.confidence }));
+      setNodeDetail({ node, sources: [], relations, loading: true, error: null });
+      try {
+        const nodeSourceIds = node.source_captured_ids || [];
+        const relationSourceIds = relations.flatMap((relation) => relation.evidence_captured_ids || []);
+        const sourceIds = Array.from(new Set([...nodeSourceIds, ...relationSourceIds])).slice(0, 8);
+        const sourcesResponse = sourceIds.length
+          ? await supabase.from('captured_info').select('id,title,type,summary,content,created_at').in('id', sourceIds).order('created_at', { ascending: false }).limit(8)
+          : { data: [], error: null };
+        if (sourcesResponse.error) throw sourcesResponse.error;
+        if (!cancelled) setNodeDetail({ node, sources: (sourcesResponse.data || []) as CapturedSource[], relations, loading: false, error: null });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '加载节点详情失败';
+        if (!cancelled) {
+          setNodeDetail({ node, sources: [], relations, loading: false, error: message });
+          toast.error(message, { description: '图谱仍可正常操作' });
+        }
+      }
+    };
+    void loadNodeDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [detailNodeId, graphData.links, nodeById]);
 
   const searchResultMap = useMemo(() => {
     return new Map(searchResults.map((result) => [result.id, result]));
@@ -237,24 +340,52 @@ export function KnowledgePage() {
 
   const displayGraphData = useMemo(() => {
     const centerNodeId = focusedNodeId || selectedNodeIds[0] || null;
+    const cutoffDate = timeRange === 'all' ? null : new Date(Date.now() - (timeRange === '7d' ? 7 : 30) * 86400000);
+
+    // 时间范围内产生的节点 ID
+    const timeNodeIds = cutoffDate
+      ? new Set(
+          graphData.nodes
+            .filter((node) => node.created_at && new Date(node.created_at) >= cutoffDate)
+            .map((node) => node.id)
+        )
+      : new Set(graphData.nodes.map((node) => node.id));
+
+    // 时间范围内产生的边 ID
+    const timeLinkIds = cutoffDate
+      ? new Set(
+          graphData.links
+            .filter((link) => link.created_at && new Date(link.created_at) >= cutoffDate)
+            .map((link) => link.id || `${linkEndpointId(link.source)}-${linkEndpointId(link.target)}`)
+        )
+      : new Set(graphData.links.map((link) => link.id || `${linkEndpointId(link.source)}-${linkEndpointId(link.target)}`));
 
     let visibleIds: Set<string>;
     let visibleLinks: GraphLink[];
 
     if (activeKind !== 'all') {
-      // 分类模式：只显示该分类节点，不显示关系边和邻居
-      visibleIds = new Set(categoryNodeIds);
+      visibleIds = new Set([...categoryNodeIds].filter((id) => timeNodeIds.has(id)));
       visibleLinks = [];
     } else if (centerNodeId) {
-      // 节点中心模式：显示该节点所在完整连通分量及分量内部所有边
-      visibleIds = getConnectedComponentNodeIds(centerNodeId, graphData.links);
+      // 节点中心模式
+      const componentIds = getConnectedComponentNodeIds(centerNodeId, graphData.links);
+      // 上下文节点：不在时间范围内但属于连通分量的邻居
+      const contextNodeIds = new Set([...componentIds].filter((id) => !timeNodeIds.has(id)));
+      visibleIds = new Set([...componentIds].filter((id) => timeNodeIds.has(id) || contextNodeIds.has(id)));
+      // 必要时保留聚焦节点的上下文邻居
+      if (!timeNodeIds.has(centerNodeId)) {
+        visibleIds = new Set([...componentIds]); // 保留整个连通分量
+      }
       visibleLinks = graphData.links.filter(
         (link) => visibleIds.has(linkEndpointId(link.source)) && visibleIds.has(linkEndpointId(link.target))
       );
     } else {
-      // 默认模式：全部节点和全部边；搜索只高亮，不收缩图
-      visibleIds = new Set(graphData.nodes.map((node) => node.id));
-      visibleLinks = graphData.links;
+      visibleIds = new Set(timeNodeIds);
+      visibleLinks = cutoffDate
+        ? graphData.links.filter(
+            (link) => timeNodeIds.has(linkEndpointId(link.source)) && timeNodeIds.has(linkEndpointId(link.target))
+          )
+        : graphData.links;
     }
 
     const degreeMap = new Map<string, number>();
@@ -277,8 +408,10 @@ export function KnowledgePage() {
         source: linkEndpointId(link.source),
         target: linkEndpointId(link.target),
       })),
+      newNodeIds: timeNodeIds,
+      newLinkIds: timeLinkIds,
     };
-  }, [activeKind, categoryNodeIds, focusedNodeId, graphData, selectedNodeIds]);
+  }, [activeKind, categoryNodeIds, focusedNodeId, graphData, selectedNodeIds, timeRange]);
 
   const selectedNodes = useMemo(() => {
     return selectedNodeIds
@@ -287,7 +420,7 @@ export function KnowledgePage() {
   }, [nodeById, selectedNodeIds]);
 
   const focusedNode = focusedNodeId ? nodeById.get(focusedNodeId) : null;
-  const hasFilteredView = Boolean(focusedNodeId || selectedNodeIds.length > 0 || searchQuery.trim() || activeKind !== 'all');
+  const hasFilteredView = Boolean(focusedNodeId || selectedNodeIds.length > 0 || searchQuery.trim() || activeKind !== 'all' || timeRange !== 'all');
 
   const activeKeywords = useMemo(() => {
     return graphData.nodes
@@ -336,6 +469,7 @@ export function KnowledgePage() {
     setSelectedNodeIds([]);
     setSearchQuery('');
     setActiveKind('all');
+    setTimeRange('all');
     window.setTimeout(() => {
       fgRef.current?.zoomToFit(400, 60);
     }, 50);
@@ -345,12 +479,10 @@ export function KnowledgePage() {
     setActiveKind(kind);
     setFocusedNodeId(null);
     setSelectedNodeIds([]);
+    setDetailNodeId(null);
     setSearchQuery('');
     setSearchResults([]);
     setSearchError(null);
-    window.setTimeout(() => {
-      fgRef.current?.zoomToFit(400, 60);
-    }, 120);
   }, []);
 
   const focusNode = useCallback((nodeId: string) => {
@@ -358,45 +490,97 @@ export function KnowledgePage() {
     setSelectedNodeIds([]);
     setActiveKind('all');
   }, []);
+  const openNodeDetail = useCallback((nodeId: string) => {
+    setDetailNodeId(nodeId);
+    focusNode(nodeId);
+  }, [focusNode]);
 
   useEffect(() => {
-    const centerNodeId = focusedNodeId || selectedNodeIds[0];
-    if (!centerNodeId) return;
+    if (!initialNodeId || loading) return;
+    if (!graphData.nodes.some((node) => node.id === initialNodeId)) return;
+    setDetailNodeId(null);
+    focusNode(initialNodeId);
+  }, [focusNode, graphData.nodes, initialNodeId, loading]);
+  const positionGraphViewport = useCallback(() => {
+    const fg = fgRef.current;
+    const graphArea = graphAreaRef.current;
+    if (!fg || !graphArea || displayGraphData.nodes.length === 0 || dimensions.width <= 0 || dimensions.height <= 0) return false;
 
-    const centerFocusedNode = () => {
-      const node = displayGraphData.nodes.find((n) => n.id === centerNodeId);
-      const fg = fgRef.current;
-      const graphArea = graphAreaRef.current;
-      if (!node || !fg || !graphArea || typeof node.x !== 'number' || typeof node.y !== 'number') return false;
+    const graphRect = graphArea.getBoundingClientRect();
+    const gw = graphRect.width;
+    const gh = graphRect.height;
+    const appRect = graphArea.closest('main')?.getBoundingClientRect() ?? graphRect;
+    const targetScreenX = Math.min(graphRect.right, Math.max(graphRect.left, appRect.left + appRect.width / 2)) - graphRect.left;
+    const targetScreenY = Math.min(graphRect.bottom, Math.max(graphRect.top, appRect.top + appRect.height / 2)) - graphRect.top;
+    const centerNodeId = focusedNodeId || selectedNodeIds[0] || null;
 
-      const zoom = 1.45;
-      const graphBounds = graphArea.getBoundingClientRect();
-      const targetScreenX = graphBounds.width / 2;
-      const targetScreenY = graphBounds.height / 2;
-      const currentScreen = fg.graph2ScreenCoords(node.x, node.y);
-      const screenCenter = fg.screen2GraphCoords(targetScreenX, targetScreenY);
-      const nodeAtTarget = fg.screen2GraphCoords(
-        targetScreenX + (currentScreen.x - targetScreenX),
-        targetScreenY + (currentScreen.y - targetScreenY)
+    if (!centerNodeId) {
+      fg.zoomToFit(0, Math.min(64, Math.max(28, gw * 0.1)));
+      if (displayGraphData.nodes.length <= 2 && fg.zoom() > 1.8) fg.zoom(1.8, 0);
+      const graphCenter = fg.centerAt();
+      const canvasCenterGraph = fg.screen2GraphCoords(gw / 2, gh / 2);
+      const targetGraph = fg.screen2GraphCoords(targetScreenX, targetScreenY);
+      fg.centerAt(
+        graphCenter.x + canvasCenterGraph.x - targetGraph.x,
+        graphCenter.y + canvasCenterGraph.y - targetGraph.y,
+        0
       );
-      const offsetX = nodeAtTarget.x - screenCenter.x;
-      const offsetY = nodeAtTarget.y - screenCenter.y;
-
-      fg.zoom(zoom, 300);
-      fg.centerAt(node.x + offsetX, node.y + offsetY, 500);
       return true;
-    };
+    }
 
-    const timeouts = [80, 220, 520, 900].map((delay) =>
-      window.setTimeout(() => {
-        centerFocusedNode();
-      }, delay)
+    // Build neighborhood: focused node + directly connected nodes
+    const neighborIds = new Set<string>();
+    neighborIds.add(centerNodeId);
+    displayGraphData.links.forEach((link) => {
+      const src = linkEndpointId(link.source);
+      const tgt = linkEndpointId(link.target);
+      if (src === centerNodeId) neighborIds.add(tgt);
+      if (tgt === centerNodeId) neighborIds.add(src);
+    });
+
+    // Use fg.getGraphBbox() to get node positions
+    const nodeBbox = fg.getGraphBbox((node) => node.id === centerNodeId);
+    if (!nodeBbox || nodeBbox.x[0] === undefined) return false;
+    const nodeX = (nodeBbox.x[0] + nodeBbox.x[1]) / 2;
+    const nodeY = (nodeBbox.y[0] + nodeBbox.y[1]) / 2;
+
+    // Use neighborhood bbox for zoom; fall back to all-nodes bbox if neighborhood is a single node
+    const localBbox = fg.getGraphBbox((node) => neighborIds.has(node.id));
+    const hasNeighborhood = neighborIds.size > 1 && localBbox && (localBbox.x[1] - localBbox.x[0]) > 10;
+    const useBbox = hasNeighborhood ? localBbox : fg.getGraphBbox();
+
+    const spanX = Math.max(48, useBbox.x[1] - useBbox.x[0]);
+    const spanY = Math.max(48, useBbox.y[1] - useBbox.y[0]);
+    const padding = Math.min(72, Math.max(36, gw * 0.12));
+    const fitScale = Math.min((gw - padding * 2) / spanX, (gh - padding * 2) / spanY);
+    const targetScale = Math.max(1.0, Math.min(4.0, fitScale * 0.85));
+
+    fg.centerAt(nodeX, nodeY, 0);
+    fg.zoom(targetScale, 0);
+    const canvasCenterGraph = fg.screen2GraphCoords(gw / 2, gh / 2);
+    const targetGraph = fg.screen2GraphCoords(targetScreenX, targetScreenY);
+    fg.centerAt(
+      nodeX + canvasCenterGraph.x - targetGraph.x,
+      nodeY + canvasCenterGraph.y - targetGraph.y,
+      0
     );
 
-    return () => {
-      timeouts.forEach(window.clearTimeout);
+    return true;
+  }, [dimensions.height, dimensions.width, displayGraphData.nodes, displayGraphData.links, focusedNodeId, selectedNodeIds]);
+
+  useEffect(() => {
+    let framesRemaining = focusedNodeId || selectedNodeIds.length > 0 ? 45 : 8;
+    const calibrate = () => {
+      positionGraphViewport();
+      framesRemaining -= 1;
+      if (framesRemaining > 0) viewportFrameRef.current = window.requestAnimationFrame(calibrate);
     };
-  }, [displayGraphData.nodes, focusedNodeId, selectedNodeIds]);
+    viewportFrameRef.current = window.requestAnimationFrame(calibrate);
+    return () => {
+      if (viewportFrameRef.current !== null) window.cancelAnimationFrame(viewportFrameRef.current);
+      viewportFrameRef.current = null;
+    };
+  }, [focusedNodeId, positionGraphViewport, selectedNodeIds.length]);
 
   const fetchGraphData = async () => {
     setLoading(true);
@@ -424,7 +608,7 @@ export function KnowledgePage() {
         });
       } else {
         setGraphData({
-          nodes: nodesResponse.data.map(node => {
+          nodes: nodesResponse.data.map((node) => {
             const kind = node.kind || 'concept';
             return {
               id: node.id,
@@ -432,12 +616,20 @@ export function KnowledgePage() {
               val: node.val || 10,
               color: NODE_KIND_META[kind]?.color || node.color || NODE_KIND_META.unknown.color,
               kind,
-              aliases: node.aliases || []
+              aliases: node.aliases || [],
+              source_captured_ids: node.source_captured_ids || [],
+              metadata: node.metadata || {},
+              created_at: node.created_at || null,
             };
           }),
-          links: linksResponse.data.map(link => ({
+          links: linksResponse.data.map((link) => ({
+            id: link.id,
             source: link.source,
-            target: link.target
+            target: link.target,
+            relation_type: link.relation_type,
+            evidence_captured_ids: link.evidence_captured_ids || [],
+            confidence: link.confidence,
+            created_at: link.created_at || null,
           }))
         });
       }
@@ -449,7 +641,7 @@ export function KnowledgePage() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-white">
+    <div className="h-full min-h-0 flex flex-col overflow-hidden bg-white">
       <div className="flex-none px-4 py-3 border-b border-gray-200">
         {setupStatus && (!setupStatus.schemaOk || !setupStatus.llmOk) ? (
           <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 text-xs text-red-700" style={{ borderRadius: '4px' }}>
@@ -480,33 +672,48 @@ export function KnowledgePage() {
         {searchQuery.trim() ? (
           <div className="mb-3 space-y-2">
             <div className="flex items-center justify-between text-xs text-gray-500">
-              <span>{visibleSearchMatches.length > 0 ? `找到 ${visibleSearchMatches.length} 个可选节点` : '暂无匹配节点'}</span>
+              <span>
+                {visibleSearchMatches.length > 0
+                  ? `找到 ${visibleSearchMatches.length} 个可选节点${searchResults.length > 0 ? '（语义搜索）' : '（本地匹配）'}`
+                  : '暂无匹配节点'}
+              </span>
               {searchError ? <span className="text-orange-600">语义搜索不可用，已使用本地搜索</span> : null}
             </div>
             {visibleSearchMatches.length > 0 ? (
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {visibleSearchMatches.map((result) => {
-                  const id = 'similarity' in result ? result.id : result.id;
-                  const name = 'similarity' in result ? result.name : result.name;
+                  const id = result.id;
+                  const name = result.name;
                   const isSelected = selectedNodeIds.includes(id);
                   const similarity = 'similarity' in result ? result.similarity : null;
-
+                  const matchedReason = 'matchedReason' in result && typeof result.matchedReason === 'string' ? result.matchedReason : null;
                   return (
-                    <div
-                      key={id}
-                      className="flex-none flex items-center gap-2 px-2.5 py-1 bg-white text-xs border border-gray-200 shadow-sm max-w-[280px]"
-                      style={{ borderRadius: '6px' }}
-                    >
-                      <button onClick={() => focusNode(id)} className="min-w-0 truncate text-gray-700 hover:text-blue-600 transition-colors" title={name}>
-                        {name}{similarity !== null ? ` · ${Math.round(similarity * 100)}%` : null}
-                      </button>
-                      <button
-                        onClick={() => (isSelected ? removeSelectedNode(id) : addSelectedNode(id))}
-                        className={isSelected ? 'text-red-500 hover:text-red-600' : 'text-blue-500 hover:text-blue-600'}
-                        aria-label={isSelected ? '移除节点' : '添加节点'}
-                      >
-                        {isSelected ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                      </button>
+                    <div key={id} className="flex-none flex items-center gap-1 px-2.5 py-1.5 bg-white text-xs border border-gray-200 shadow-sm" style={{ borderRadius: '6px' }}>
+                      <div className="min-w-0 flex flex-col gap-0.5">
+                        <button onClick={() => { setDetailNodeId(null); focusNode(id); }} className="truncate text-left text-gray-700 hover:text-blue-600 transition-colors" title={matchedReason || name}>
+                          {name}{similarity !== null ? ` · ${Math.round(similarity * 100)}%` : null}
+                        </button>
+                        {matchedReason ? (
+                          <span className="text-[10px] text-gray-400 truncate max-w-[200px]">{matchedReason}</span>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-0.5 ml-1">
+                        <button
+                          onClick={() => focusNode(id)}
+                          className="text-gray-400 hover:text-amber-600 transition-colors p-0.5"
+                          title="在图谱中聚焦"
+                          aria-label="在图谱中聚焦"
+                        >
+                          <Maximize2 className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => (isSelected ? removeSelectedNode(id) : addSelectedNode(id))}
+                          className={isSelected ? 'text-red-500 hover:text-red-600 p-0.5' : 'text-blue-500 hover:text-blue-600 p-0.5'}
+                          aria-label={isSelected ? '移除节点' : '添加节点'}
+                        >
+                          {isSelected ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
@@ -556,9 +763,36 @@ export function KnowledgePage() {
             </button>
           ))}
         </div>
+
+        {/* 时间范围选择器 */}
+        <div className="flex items-center gap-1.5 pt-2 border-t border-gray-100">
+          <span className="text-[11px] text-gray-400 flex-none">时间</span>
+          {(['all', '7d', '30d'] as const).map((range) => (
+            <button
+              key={range}
+              onClick={() => {
+                setTimeRange(range);
+                setFocusedNodeId(null);
+              }}
+              className={`px-2 py-0.5 text-[11px] transition-colors ${
+                timeRange === range
+                  ? 'bg-purple-50 text-purple-700 border border-purple-200'
+                  : 'text-gray-500 hover:text-gray-700 border border-transparent'
+              }`}
+              style={{ borderRadius: '4px' }}
+            >
+              {range === 'all' ? '全部' : range}
+            </button>
+          ))}
+          {displayGraphData.newNodeIds && displayGraphData.nodes.length < graphData.nodes.length ? (
+            <span className="text-[10px] text-purple-500 ml-auto">
+              新增 {displayGraphData.newNodeIds.size} 节点
+            </span>
+          ) : null}
+        </div>
       </div>
 
-      <div ref={graphAreaRef} className="flex-1 relative bg-slate-50">
+      <div ref={graphAreaRef} className="flex-1 min-h-0 relative overflow-hidden bg-slate-50 touch-none">
         {loading ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-gray-50/80">
             <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-2" />
@@ -568,17 +802,29 @@ export function KnowledgePage() {
 
         <ForceGraph2D
           ref={fgRef}
-          graphData={displayGraphData}
+          graphData={displayGraphData as unknown as { nodes: GraphNode[]; links: GraphLink[] }}
           width={dimensions.width}
           height={dimensions.height}
-          nodeLabel={(node: any) => `${node.name}${node.kind ? `｜${NODE_KIND_META[getNodeKind(node)]?.label || node.kind}` : ''}`}
-          nodeCanvasObject={(node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+          nodeCanvasObject={(node, ctx: CanvasRenderingContext2D, globalScale: number) => {
             const isMatched = matchedIds.has(node.id);
+            if (typeof node.x !== 'number' || typeof node.y !== 'number') return;
             const isSelected = selectedNodeIds.includes(node.id);
             const isFocused = focusedNodeId === node.id;
             const isCenter = isFocused || isSelected;
+            const isNew = displayGraphData.newNodeIds?.has(node.id) ?? false;
             const baseRadius = Math.max(5, Math.min(10, 4 + Math.sqrt(node.val || 6) * 1.5));
             const radius = baseRadius * (isCenter ? 1.15 : isMatched ? 1.1 : 1);
+
+            // 新增节点外圈紫色光环
+            if (isNew && timeRange !== 'all' && !isCenter && !isMatched) {
+              ctx.shadowColor = 'rgba(168, 85, 247, 0.35)';
+              ctx.shadowBlur = 10 / globalScale;
+              hexagonPath(ctx, node.x, node.y, radius + 2 / globalScale);
+              ctx.strokeStyle = 'rgba(168, 85, 247, 0.5)';
+              ctx.lineWidth = 1.5 / globalScale;
+              ctx.stroke();
+              ctx.shadowBlur = 0;
+            }
 
             ctx.shadowColor = isCenter ? 'rgba(37, 99, 235, 0.4)' : 'rgba(15, 23, 42, 0.15)';
             ctx.shadowBlur = (isCenter ? 12 : 6) / globalScale;
@@ -587,12 +833,12 @@ export function KnowledgePage() {
             ctx.fill();
             ctx.shadowBlur = 0;
 
-            ctx.lineWidth = (isCenter ? 2.5 : 1.2) / globalScale;
-            ctx.strokeStyle = isFocused ? '#FBBF24' : isSelected ? '#2563EB' : 'rgba(255, 255, 255, 0.95)';
+            ctx.lineWidth = (isCenter ? 2.5 : isNew ? 1.8 : 1.2) / globalScale;
+            ctx.strokeStyle = isFocused ? '#FBBF24' : isSelected ? '#2563EB' : isNew && timeRange !== 'all' ? '#A855F7' : 'rgba(255, 255, 255, 0.95)';
             hexagonPath(ctx, node.x, node.y, radius);
             ctx.stroke();
 
-            // 六边形内动态文字：大小和字符数随节点大小与缩放变化
+            // 六边形内动态文字
             const maxChars = isCenter || isMatched
               ? Math.max(4, Math.round(radius * 0.8))
               : Math.max(2, Math.round(radius * 0.5));
@@ -616,30 +862,162 @@ export function KnowledgePage() {
               ctx.fillText(`${Math.round(result.similarity * 100)}%`, node.x, node.y + radius + 8 / globalScale);
             }
           }}
-          nodePointerAreaPaint={(node: any, color: string, ctx: CanvasRenderingContext2D) => {
+          nodePointerAreaPaint={(node, color: string, ctx: CanvasRenderingContext2D) => {
             const baseRadius = Math.max(5, Math.min(10, 4 + Math.sqrt(node.val || 6) * 1.5));
+            if (typeof node.x !== 'number' || typeof node.y !== 'number') return;
             ctx.fillStyle = color;
             hexagonPath(ctx, node.x, node.y, Math.max(9, baseRadius * 1.4));
             ctx.fill();
           }}
-          linkColor={(link: any) => {
+          linkColor={(link: GraphLink) => {
             const source = linkEndpointId(link.source);
             const target = linkEndpointId(link.target);
             return matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId
               ? 'rgba(37, 99, 235, 0.62)'
               : 'rgba(148, 163, 184, 0.28)';
           }}
-          linkWidth={(link: any) => {
+          onEngineStop={positionGraphViewport}
+          linkWidth={(link: GraphLink) => {
             const source = linkEndpointId(link.source);
             const target = linkEndpointId(link.target);
             return matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId ? 2.6 : 1.2;
           }}
           backgroundColor="#F8FAFC"
           cooldownTicks={100}
-          onNodeClick={(node: any) => focusNode(node.id)}
-          onNodeRightClick={(node: any) => addSelectedNode(node.id)}
+          onNodeClick={(node: GraphNode) => openNodeDetail(node.id)}
+          onNodeRightClick={(node: GraphNode) => addSelectedNode(node.id)}
         />
 
+
+        <AnimatePresence>
+          {nodeDetail ? (
+            <motion.aside
+              initial={{ opacity: 0, x: 40 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 40 }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              className="absolute z-30 bg-white shadow-xl flex min-h-0 flex-col overflow-hidden
+                inset-x-0 bottom-0 max-h-[calc(100%_-_0.75rem)] border-t border-gray-200 rounded-t-xl
+                md:inset-y-0 md:right-0 md:left-auto md:w-full md:max-w-md md:max-h-none md:border-l md:border-t-0 md:rounded-none"
+            >
+              <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Network className="w-4 h-4 text-blue-500" />
+                  <h2 className="font-semibold text-gray-900">节点详情</h2>
+                </div>
+                <button
+                  onClick={() => setDetailNodeId(null)}
+                  className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-md"
+                  aria-label="关闭节点详情"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] space-y-5 touch-pan-y">
+                <section>
+                  <h3 className="text-lg font-semibold text-gray-900">{nodeDetail.node.name}</h3>
+                  <p className="mt-1 text-xs text-gray-500">
+                    类型：{NODE_KIND_META[getNodeKind(nodeDetail.node)]?.label || '未分类'}
+                  </p>
+                  {nodeDetail.node.aliases?.length ? (
+                    <p className="mt-2 text-xs text-gray-500">别名：{nodeDetail.node.aliases.join('、')}</p>
+                  ) : null}
+                </section>
+
+                {nodeDetail.loading ? (
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    正在加载来源与关系...
+                  </div>
+                ) : null}
+
+                {nodeDetail.error ? (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {nodeDetail.error}
+                  </div>
+                ) : null}
+
+                {!nodeDetail.loading && !nodeDetail.error ? (
+                  <>
+                    <section>
+                      <h4 className="text-sm font-semibold text-gray-800 mb-2">
+                        来源记录 <span className="text-xs font-normal text-gray-400">（最多 8 条）</span>
+                      </h4>
+                      {nodeDetail.sources.length ? (
+                        <div className="space-y-2">
+                          {nodeDetail.sources.map((source) => (
+                            <button
+                              key={source.id}
+                              onClick={() => onNavigate?.('item-detail', source.id)}
+                              className="w-full text-left rounded-md border border-gray-200 p-3 hover:border-blue-300 hover:bg-blue-50/40"
+                            >
+                              <span className="block text-sm font-medium text-gray-800 truncate">
+                                {source.title || '未命名记录'}
+                              </span>
+                              <span className="mt-1 block text-xs text-gray-500 line-clamp-2">
+                                {source.summary || source.content || '暂无摘要'}
+                              </span>
+                              <span className="mt-2 inline-flex items-center gap-1 text-xs text-blue-600">
+                                查看记录 <ExternalLink className="w-3 h-3" />
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-500">暂无来源内容</p>
+                      )}
+                    </section>
+
+                    <section>
+                      <h4 className="text-sm font-semibold text-gray-800 mb-2">邻居与关系</h4>
+                      {nodeDetail.relations.length ? (
+                        <div className="space-y-2">
+                          {nodeDetail.relations.map((relation, index) => {
+                            const outgoing = relation.source === nodeDetail.node.id;
+                            const neighborId = outgoing ? relation.target : relation.source;
+                            const neighbor = nodeById.get(neighborId);
+                            const relationLabel = getRelationLabel(relation.relation_type);
+                            const evidence = relation.evidence_captured_ids?.length
+                              ? nodeDetail.sources
+                                  .filter((source) => relation.evidence_captured_ids?.includes(source.id))
+                                  .map((source) => source.title)
+                                  .join('、')
+                              : '';
+                            const directionLabel = outgoing ? '出向' : '入向';
+                            const arrow = outgoing
+                              ? `${nodeDetail.node.name} \u2192 ${neighbor?.name || '未知节点'}`
+                              : `${neighbor?.name || '未知节点'} \u2192 ${nodeDetail.node.name}`;
+                            return (
+                              <div
+                                key={relation.id || `${relation.source}-${relation.target}-${index}`}
+                                className="rounded-md border border-gray-200 p-3"
+                              >
+                                <button
+                                  onClick={() => neighbor && openNodeDetail(neighbor.id)}
+                                  className="text-sm font-medium text-blue-700 hover:underline truncate"
+                                >
+                                  {neighbor?.name || '未知节点'}
+                                </button>
+                                <p className="mt-1 text-xs text-gray-600">
+                                  {directionLabel} · {relationLabel} · {arrow}
+                                </p>
+                                <p className="mt-1 text-xs text-gray-400">
+                                  证据：{evidence || '暂无证据记录'}
+                                </p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-500">暂无邻居关系</p>
+                      )}
+                    </section>
+                  </>
+                ) : null}
+              </div>
+            </motion.aside>
+          ) : null}
+        </AnimatePresence>
         <div className="absolute bottom-4 right-4 flex flex-col gap-2">
           <button
             onClick={handleZoomIn}

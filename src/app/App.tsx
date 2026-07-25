@@ -26,6 +26,7 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('home');
   const [previousPage, setPreviousPage] = useState<Page>('home');
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [selectedKnowledgeNodeId, setSelectedKnowledgeNodeId] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
@@ -58,9 +59,17 @@ export default function App() {
     setIsAuthenticated(true);
   };
 
-  const handleLogout = () => {
-    setIsAuthenticated(false);
-    setCurrentPage('home');
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error('退出登录失败:', error);
+    } finally {
+      localStorage.removeItem('demo_auth');
+      localStorage.removeItem('supabase_session');
+      setIsAuthenticated(false);
+      setCurrentPage('home');
+    }
   };
 
   // 如果正在检查认证状态，显示加载画面
@@ -87,8 +96,11 @@ export default function App() {
   const handlePageChange = (newPage: Page, itemId?: string) => {
     setPreviousPage(currentPage);
     setCurrentPage(newPage);
-    if (itemId) {
+    if (newPage === 'item-detail' && itemId) {
       setSelectedItemId(itemId);
+    }
+    if (newPage === 'knowledge') {
+      setSelectedKnowledgeNodeId(itemId || null);
     }
   };
 
@@ -97,11 +109,11 @@ export default function App() {
       case 'home':
         return <HomePage onNavigate={(page, id) => handlePageChange(page as Page, id)} />;
       case 'capture':
-        return <CapturePage />;
+        return <CapturePage onNavigate={(page, id) => handlePageChange(page as Page, id)} />;
       case 'process':
         return <ProcessPage />;
       case 'knowledge':
-        return <KnowledgePage />;
+        return <KnowledgePage initialNodeId={selectedKnowledgeNodeId} onNavigate={(page, id) => handlePageChange(page as Page, id)} />
       case 'settings':
         return <SettingsPage onLogout={handleLogout} />;
       case 'item-detail':
@@ -132,7 +144,7 @@ export default function App() {
       x: 0,
       opacity: 1,
       transition: {
-        type: 'spring',
+        type: 'spring' as const,
         stiffness: 300,
         damping: 30
       }
@@ -141,7 +153,7 @@ export default function App() {
       x: direction > 0 ? '-100%' : '100%',
       opacity: 0,
       transition: {
-        type: 'spring',
+        type: 'spring' as const,
         stiffness: 300,
         damping: 30
       }

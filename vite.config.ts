@@ -12,8 +12,9 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      // Legacy dev-only proxy from the early prototype. The app should call
-      // Vercel /api/* functions instead of exposing LLM provider access here.
+      // ⚠️ LEGACY: 早期原型遗留的 LLM 代理，仅供本地调试参考。
+      // 当前架构要求前端只调用本项目的 Vercel /api/* 服务端函数，
+      // 不应直接代理 LLM provider。确认无本地流程依赖后可删除此段。
       '/api/llm': {
         target: 'https://api.edgefn.net/v1',
         changeOrigin: true,

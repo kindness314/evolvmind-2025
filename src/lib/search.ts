@@ -4,6 +4,7 @@
  * prod 模式：调 /api/search 端点
  */
 import { supabase } from './supabase';
+import { getApiAuthHeaders } from './apiAuth';
 
 export interface SearchResult {
   id: string;
@@ -17,6 +18,10 @@ export interface SearchResult {
   is_pinned: boolean;
   created_at: string;
   similarity: number;
+  /** 确定性匹配原因（相似度区间 + 命中字段） */
+  matchedReason: string;
+  /** 来源摘要片段（最多 2 条） */
+  sourcePreviews: string[];
 }
 
 export interface SearchResponse {
@@ -25,6 +30,9 @@ export interface SearchResponse {
   results: SearchResult[];
   count: number;
   error?: string;
+  detail?: string;
+  /** 语义搜索不可用时为 false */
+  semanticAvailable?: boolean;
 }
 
 /**
@@ -36,31 +44,31 @@ export async function semanticSearch(params: {
   threshold?: number;
   count?: number;
 }): Promise<SearchResult[]> {
-  const { query, userId, threshold = 0.3, count = 20 } = params;
+  const { query, threshold = 0.3, count = 20 } = params;
   if (!query.trim()) return [];
 
   try {
+    const headers = await getApiAuthHeaders();
     const resp = await fetch('/api/search', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query,
-        user_id: userId || null,
-        threshold,
-        count,
-      }),
+      headers,
+      body: JSON.stringify({ query, threshold, count, demo: localStorage.getItem('demo_auth') === 'true' }),
     });
 
     if (!resp.ok) {
       const errText = await resp.text();
-      console.error('语义搜索失败:', errText);
+      console.error('语义搜索失败:', resp.status, errText);
       return [];
     }
 
     const data: SearchResponse = await resp.json();
+    if (!data.semanticAvailable) {
+      console.warn('语义搜索不可用，使用本地匹配');
+    }
     return data.results || [];
-  } catch (e: any) {
-    console.error('语义搜索异常:', e.message);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : 'Unknown error';
+    console.error('语义搜索异常:', message);
     return [];
   }
 }
@@ -74,10 +82,11 @@ export async function requestBackfill(batchSize?: number): Promise<{
   total: number;
   errors?: Array<{ id: string; error: string }>;
 }> {
+  const headers = await getApiAuthHeaders();
   const resp = await fetch('/api/backfill', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ batch_size: batchSize || 10 }),
+    headers,
+    body: JSON.stringify({ batch_size: batchSize || 10, demo: localStorage.getItem('demo_auth') === 'true' }),
   });
 
   if (!resp.ok) {
@@ -92,11 +101,13 @@ export async function requestBackfill(batchSize?: number): Promise<{
  * 为单条记录生成 embedding — POST /api/embed (fire-and-forget)
  */
 export function generateEmbeddingForRow(capturedId: string): void {
-  fetch('/api/embed', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ captured_id: capturedId }),
-  }).catch((e) => {
-    console.error('embedding 生成失败 (fire-and-forget):', e.message);
-  });
+  getApiAuthHeaders()
+    .then((headers) => fetch('/api/embed', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ captured_id: capturedId, demo: localStorage.getItem('demo_auth') === 'true' }),
+    }))
+    .catch((e) => {
+      console.error('embedding 生成失败 (fire-and-forget):', e instanceof Error ? e.message : e);
+    });
 }

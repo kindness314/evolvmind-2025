@@ -1,6 +1,8 @@
 # EvolvMind
 
-EvolvMind 是一个用于“捕获碎片信息 → AI 抽取结构 → 构建个人知识图谱 → 语义检索与回看”的个人知识系统。
+> **⚠️ 重要：在进行本项目的任何开发工作前，请先阅读并严格遵守项目根目录下的 [CLAUDE.md](../CLAUDE.md) 文件。** 该文件包含架构规范、编码标准、安全约束等核心指导原则，所有代码变更必须遵循其中的规定。
+
+EvolvMind 是一个用于”捕获碎片信息 → AI 抽取结构 → 构建个人知识图谱 → 语义检索与回看”的个人知识系统。
 
 当前项目使用 Vite + React 18 + TypeScript + Tailwind CSS 4 构建前端，使用 Supabase 作为认证、数据库、存储与 Realtime 后端，使用 Vercel Serverless Functions 承载 AI 提取、embedding、语义搜索与图谱抽取接口。
 

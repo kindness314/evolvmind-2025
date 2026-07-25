@@ -44,7 +44,8 @@ VITE_SUPABASE_ANON_KEY=<Supabase anon public key>
 ### 服务端运行变量
 
 ```text
-MINIMAX_API_KEY=<服务端 API key>
+MINIMAX_API_KEY=<embedding / extraction API key>
+MINIMAX_CHAT_API_KEY=<可选，chat 对话 key，为空则退回 MINIMAX_API_KEY>
 MINIMAX_MODEL=<可选，chat/extract 模型>
 MINIMAX_BASE_URL=https://api.edgefn.net/v1
 MINIMAX_EMBEDDING_MODEL=BAAI/bge-m3

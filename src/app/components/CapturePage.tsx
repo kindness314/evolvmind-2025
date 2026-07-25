@@ -1,13 +1,44 @@
-import { Type, Camera, Mic, FileUp, Save, X, Loader2, Play, Pause, Trash2, Sparkles } from 'lucide-react';
+import { Type, Camera, Mic, FileUp, Save, X, Loader2, Play, Pause, Trash2, Sparkles, CheckCircle2, ArrowRight, Home, Share2, FileText, AlertCircle } from 'lucide-react';
 import { useState, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { extractInformation } from '../../lib/ai';
 import { buildKnowledgeGraphFromContent, checkGraphSetup } from '../../lib/graph';
 import { generateEmbeddingForRow } from '../../lib/search';
+import { motion } from 'motion/react';
 
 type CaptureMode = 'text' | 'photo' | 'audio' | 'import' | null;
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const ALLOWED_DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'txt', 'md']);
 
-export function CapturePage() {
+function isSupportedFile(file: File, mode: CaptureMode): boolean {
+  if (mode === 'photo') return file.type.startsWith('image/');
+  if (mode === 'audio') return file.type.startsWith('audio/');
+  if (mode === 'import') {
+    const extension = file.name.split('.').pop()?.toLowerCase() || '';
+    return ALLOWED_DOCUMENT_EXTENSIONS.has(extension);
+  }
+  return false;
+}
+
+interface GraphProcessResult {
+  nodesProcessed: number;
+  linksProcessed: number;
+  linksInserted: number;
+  linksUpdated: number;
+}
+
+interface SavedItem {
+  id: string;
+  title: string;
+  summary: string;
+  keywords: string[];
+}
+
+interface CapturePageProps {
+  onNavigate?: (page: string, itemId?: string) => void;
+}
+
+export function CapturePage({ onNavigate }: CapturePageProps) {
   const [mode, setMode] = useState<CaptureMode>(null);
   const [textInput, setTextInput] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -23,6 +54,12 @@ export function CapturePage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
+  // P0: 捕获结果状态
+  const [savedItem, setSavedItem] = useState<SavedItem | null>(null);
+  const [graphStatus, setGraphStatus] = useState<'idle' | 'processing' | 'done' | 'error'>('idle');
+  const [graphResult, setGraphResult] = useState<GraphProcessResult | null>(null);
+  const [graphError, setGraphError] = useState<string | null>(null);
+
   const captureOptions = [
     { id: 'text', icon: Type, label: '文字', color: 'bg-blue-50 hover:bg-blue-100', accept: '' },
     { id: 'photo', icon: Camera, label: '拍照', color: 'bg-green-50 hover:bg-green-100', accept: 'image/*' },
@@ -33,7 +70,6 @@ export function CapturePage() {
   const handleCapture = (captureMode: CaptureMode) => {
     setMode(captureMode);
     if (captureMode !== 'text' && captureMode !== null) {
-      // 延迟触发，确保 DOM 更新
       setTimeout(() => {
         fileInputRef.current?.click();
       }, 100);
@@ -42,18 +78,26 @@ export function CapturePage() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      const url = URL.createObjectURL(selectedFile);
-      setPreviewUrl(url);
-      
-      // 预设基础信息，等待 AI 分析
-      setExtractedData({
-        title: selectedFile.name.split('.')[0],
-        keywords: [selectedFile.type.split('/')[0], '新导入'],
-        summary: `成功导入了 ${selectedFile.name}，点击下方按钮开始 AI 智能分析内容...`
-      });
+    if (!selectedFile) return;
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      alert('文件大小不能超过 10MB');
+      e.target.value = '';
+      return;
     }
+    if (!isSupportedFile(selectedFile, mode)) {
+      alert('不支持的文件类型');
+      e.target.value = '';
+      return;
+    }
+    if (file && previewUrl) URL.revokeObjectURL(previewUrl);
+    setFile(selectedFile);
+    const url = URL.createObjectURL(selectedFile);
+    setPreviewUrl(url);
+    setExtractedData({
+      title: selectedFile.name.split('.')[0],
+      keywords: [selectedFile.type.split('/')[0] || '文件', '新导入'],
+      summary: `成功导入了 ${selectedFile.name}，点击下方按钮开始 AI 智能分析内容...`
+    });
   };
 
   const handleAnalyze = async () => {
@@ -81,30 +125,34 @@ export function CapturePage() {
   };
 
   const handleSave = async () => {
+    if (file && (file.size > MAX_FILE_SIZE || !isSupportedFile(file, mode))) {
+      alert('文件无效：大小必须不超过 10MB，且类型必须受支持');
+      return;
+    }
     if (!mode) return;
-    
+
     setIsSaving(true);
     try {
       let finalContent = textInput;
-      
-      // 如果有文件，上传到 Supabase Storage
+
+      // Storage 路径首段必须是当前用户 scope；Demo 使用固定 scope。
       if (file) {
-        const fileExt = file.name.split('.').pop();
+        const fileExt = file.name.split('.').pop()?.toLowerCase() || 'bin';
+        const { data: { user } } = await supabase.auth.getUser();
+        const scopeId = user?.id || '00000000-0000-0000-0000-000000000000';
         const fileName = `${Math.random().toString(36).substring(2)}_${Date.now()}.${fileExt}`;
-        const filePath = `uploads/${fileName}`;
+        const filePath = `${scopeId}/${fileName}`;
 
         const { error: uploadError } = await supabase.storage
           .from('captured-files')
           .upload(filePath, file);
 
-        if (uploadError) throw uploadError;
-
-        // 获取公网访问地址
-        const { data: { publicUrl } } = supabase.storage
+        const { data: signedUrlData, error: signedUrlError } = await supabase.storage
           .from('captured-files')
-          .getPublicUrl(filePath);
-          
-        finalContent = publicUrl;
+          .createSignedUrl(filePath, 60 * 60);
+        if (signedUrlError || !signedUrlData?.signedUrl) throw signedUrlError || new Error('无法生成文件访问链接');
+        finalContent = signedUrlData.signedUrl;
+
       }
 
       const { data, error } = await supabase
@@ -121,38 +169,53 @@ export function CapturePage() {
 
       if (error) throw error;
 
+      // 记录保存结果
+      const itemId = data?.id;
+      setSavedItem({
+        id: itemId || '',
+        title: extractedData.title,
+        summary: extractedData.summary,
+        keywords: extractedData.keywords,
+      });
+
       // fire-and-forget: 为新记录生成 embedding 向量
-      if (data?.id) {
-        generateEmbeddingForRow(data.id);
+      if (itemId) {
+        generateEmbeddingForRow(itemId);
       }
 
+      // 启动知识图谱构建并追踪状态
       const contentForGraph =
         mode === 'text'
           ? textInput
           : `标题: ${extractedData.title}\n摘要: ${extractedData.summary}\n关键词: ${extractedData.keywords.join(', ')}\n资源: ${finalContent}`;
 
-      void (async () => {
-        const setup = await checkGraphSetup();
-        if (!setup.schemaOk) {
-          if (setup.schemaError?.toLowerCase().includes('invalid api key')) {
-            alert('知识图谱未更新：Supabase 连接配置错误（请检查 VITE_SUPABASE_PROJECT_ID / VITE_SUPABASE_ANON_KEY 并重新部署）。');
-          } else {
-            alert('知识图谱未更新：数据库未应用图谱迁移（请在 Supabase 执行 20240401000006_extend_knowledge_graph.sql）。');
-          }
-          console.error('知识图谱 schema 检查失败:', setup.schemaError);
-          return;
-        }
-        if (!setup.llmOk) {
-          alert('知识图谱未更新：LLM 未配置（请在 Vercel 或本地服务端环境配置 MINIMAX_API_KEY）。');
-          console.error('知识图谱 LLM 检查失败:', setup.llmError);
-          return;
-        }
-        await buildKnowledgeGraphFromContent({ content: contentForGraph, capturedId: data?.id });
-      })().catch((e) => {
-        console.error('知识图谱更新失败:', e);
-      });
+      setGraphStatus('processing');
 
-      handleCancel(); // 重置状态
+      (async () => {
+        try {
+          const setup = await checkGraphSetup();
+          if (!setup.schemaOk) {
+            const msg = setup.schemaError?.toLowerCase().includes('invalid api key')
+              ? 'Supabase 连接配置错误'
+              : '数据库未应用图谱迁移';
+            setGraphError(msg);
+            setGraphStatus('error');
+            return;
+          }
+          if (!setup.llmOk) {
+            setGraphError('LLM 未配置');
+            setGraphStatus('error');
+            return;
+          }
+          const result = await buildKnowledgeGraphFromContent({ content: contentForGraph, capturedId: itemId });
+          setGraphResult(result);
+          setGraphStatus('done');
+        } catch (e: any) {
+          console.error('知识图谱更新失败:', e);
+          setGraphError(e.message || '图谱构建失败');
+          setGraphStatus('error');
+        }
+      })();
     } catch (error) {
       console.error('保存失败:', error);
       alert('保存失败，请稍后重试');
@@ -169,11 +232,144 @@ export function CapturePage() {
       URL.revokeObjectURL(previewUrl);
       setPreviewUrl(null);
     }
+    // 重置 P0 结果状态
+    setSavedItem(null);
+    setGraphStatus('idle');
+    setGraphResult(null);
+    setGraphError(null);
   };
 
   return (
     <div className="h-full flex flex-col bg-white">
-      {mode === null ? (
+      {savedItem ? (
+        // P0: 捕获完成结果卡片
+        <div className="flex-1 flex flex-col">
+          <div className="flex-1 overflow-y-auto">
+            {/* 成功标识 */}
+            <motion.div
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ type: 'spring', stiffness: 200, delay: 0.1 }}
+              className="flex flex-col items-center pt-10 pb-6"
+            >
+              <div className="w-16 h-16 bg-green-500 flex items-center justify-center mb-4" style={{ borderRadius: '4px' }}>
+                <CheckCircle2 className="w-10 h-10 text-white" />
+              </div>
+              <h2 className="text-lg font-medium text-gray-900">保存成功</h2>
+              <p className="text-sm text-gray-500 mt-1">内容已保存，正在构建知识图谱...</p>
+            </motion.div>
+
+            {/* AI 提取结果摘要 */}
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+              className="mx-4 mb-4 p-4 bg-blue-50 border-l-4 border-blue-500" style={{ borderRadius: '0 4px 4px 0' }}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles className="w-4 h-4 text-blue-500" />
+                <span className="text-xs font-bold text-blue-600">AI 智能摘要</span>
+              </div>
+              <h3 className="text-base font-medium text-gray-900 mb-2">{savedItem.title}</h3>
+              <p className="text-sm text-blue-800 leading-relaxed mb-3">{savedItem.summary}</p>
+              <div className="flex flex-wrap gap-1.5">
+                {savedItem.keywords.map((kw, i) => (
+                  <span key={i} className="px-2 py-0.5 bg-white text-blue-600 text-xs border border-blue-200" style={{ borderRadius: '4px' }}>#{kw}</span>
+                ))}
+              </div>
+            </motion.div>
+
+            {/* 知识图谱处理状态 */}
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.35 }}
+              className="mx-4 mb-4 p-4 bg-white border border-gray-200" style={{ borderRadius: '4px' }}
+            >
+              <div className="flex items-center gap-2 mb-3">
+                <Share2 className="w-4 h-4 text-purple-500" />
+                <span className="text-sm font-medium text-gray-700">知识图谱</span>
+              </div>
+
+              {graphStatus === 'processing' && (
+                <div className="flex items-center gap-2 text-sm text-purple-600">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>正在分析内容并构建知识节点与关系...</span>
+                </div>
+              )}
+
+              {graphStatus === 'done' && graphResult && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-sm text-green-600">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>知识图谱更新完成</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-3 bg-gray-50 text-center" style={{ borderRadius: '4px' }}>
+                      <p className="text-xl font-medium text-gray-900">{graphResult.nodesProcessed}</p>
+                      <p className="text-xs text-gray-500">处理节点</p>
+                    </div>
+                    <div className="p-3 bg-gray-50 text-center" style={{ borderRadius: '4px' }}>
+                      <p className="text-xl font-medium text-gray-900">{graphResult.linksInserted}</p>
+                      <p className="text-xs text-gray-500">新增关系</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {graphStatus === 'error' && (
+                <div className="flex items-start gap-2 text-sm">
+                  <AlertCircle className="w-4 h-4 text-amber-500 flex-none mt-0.5" />
+                  <div>
+                    <p className="text-amber-700 font-medium">图谱构建未完成</p>
+                    <p className="text-amber-600 text-xs mt-0.5">{graphError || '未知错误'}</p>
+                    <p className="text-gray-500 text-xs mt-1">内容已安全保存，图谱可在之后重新生成。</p>
+                  </div>
+                </div>
+              )}
+
+              {graphStatus === 'idle' && (
+                <p className="text-sm text-gray-400">等待图谱构建...</p>
+              )}
+            </motion.div>
+          </div>
+
+          {/* 底部操作按钮 */}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.45 }}
+            className="flex-none px-4 py-4 border-t border-gray-200 space-y-2"
+          >
+            <div className="flex gap-2">
+              <button
+                onClick={() => onNavigate?.('home')}
+                className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors flex items-center justify-center gap-2"
+                style={{ borderRadius: '4px' }}
+              >
+                <Home className="w-4 h-4" />
+                返回首页
+              </button>
+              <button
+                onClick={() => savedItem.id && onNavigate?.('item-detail', savedItem.id)}
+                className="flex-1 px-4 py-2.5 bg-blue-500 text-white text-sm font-medium hover:bg-blue-600 transition-colors flex items-center justify-center gap-2"
+                style={{ borderRadius: '4px' }}
+              >
+                <FileText className="w-4 h-4" />
+                查看详情
+              </button>
+            </div>
+            <button
+              onClick={() => onNavigate?.('knowledge')}
+              className="w-full px-4 py-2.5 bg-purple-50 text-purple-700 text-sm font-medium hover:bg-purple-100 transition-colors flex items-center justify-center gap-2 border border-purple-200"
+              style={{ borderRadius: '4px' }}
+            >
+              <Share2 className="w-4 h-4" />
+              查看知识图谱
+            </button>
+          </motion.div>
+        </div>
+      ) : mode === null ? (
         // 选择捕获模式
         <div className="flex-1 flex flex-col items-center justify-center px-6">
           <h2 className="text-xl font-medium text-gray-900 mb-8">选择捕获方式</h2>

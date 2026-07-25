@@ -3,6 +3,7 @@
  * 为 embedding IS NULL 的 captured_info 行批量生成向量
  */
 import { generateEmbedding, buildEmbeddingText, type VercelRequest, type VercelResponse } from './_lib/embedding.js';
+import { resolveRequestScope } from './_lib/requestScope.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
@@ -31,18 +32,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  let requestScope;
+  try {
+    requestScope = await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+  } catch (e: unknown) {
+    res.status(401).json({ error: e instanceof Error ? e.message : 'Authentication required' });
+    return;
+  }
+
   const batchSize = typeof req.body?.batch_size === 'number' ? Math.min(req.body.batch_size, 5) : 5;
   const baseUrl = process.env.MINIMAX_BASE_URL;
-
+  const requestSupabaseKey = requestScope.accessToken ? SUPABASE_ANON_KEY : supabaseKey;
   const headers = {
     'Content-Type': 'application/json',
-    apikey: supabaseKey,
-    Authorization: `Bearer ${supabaseKey}`,
+    apikey: requestSupabaseKey,
+    Authorization: `Bearer ${requestScope.accessToken || requestSupabaseKey}`,
   };
 
   try {
-    // 1. 查询 embedding IS NULL 的行
-    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?embedding=is.null&select=id,title,summary,content,tags&limit=${batchSize}`;
+    const scopeQuery = requestScope.isDemo
+      ? `scope_id=eq.${encodeURIComponent(requestScope.scopeId)}`
+      : `user_id=eq.${encodeURIComponent(requestScope.scopeId)}`;
+    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?embedding=is.null&${scopeQuery}&select=id,title,summary,content,tags&limit=${batchSize}`;
     const queryResp = await fetch(queryUrl, { headers });
 
     if (!queryResp.ok) {

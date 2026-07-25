@@ -323,10 +323,13 @@ type DbLink = {
 
 export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capturedId?: string }) {
   const capturedId = params.capturedId;
+  const currentUser = (await supabase.auth.getUser()).data.user;
+  const scopeId = currentUser?.id || '00000000-0000-0000-0000-000000000000';
 
   const nodesResp = await supabase
     .from('knowledge_nodes')
-    .select('id,name,normalized_name,kind,aliases,source_captured_ids,val,color');
+    .select('id,name,normalized_name,kind,aliases,source_captured_ids,val,color')
+    .eq('scope_id', scopeId);
   if (nodesResp.error) throw nodesResp.error;
   const existingNodes = (nodesResp.data || []) as DbNode[];
 
@@ -416,7 +419,8 @@ export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capt
 
   const linksResp = await supabase
     .from('knowledge_links')
-    .select('id,source,target,relation_type,evidence_captured_ids');
+    .select('id,source,target,relation_type,evidence_captured_ids')
+    .eq('scope_id', scopeId);
   if (linksResp.error) throw linksResp.error;
   const existingLinks = (linksResp.data || []) as DbLink[];
 

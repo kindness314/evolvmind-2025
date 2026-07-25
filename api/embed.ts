@@ -3,6 +3,7 @@
  * 用于 CapturePage 保存后的 fire-and-forget 调用
  */
 import { generateEmbedding, buildEmbeddingText, type VercelRequest, type VercelResponse } from './_lib/embedding.js';
+import { resolveRequestScope } from './_lib/requestScope.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
@@ -26,21 +27,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  let requestScope;
+  try {
+    requestScope = await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+  } catch (e: unknown) {
+    res.status(401).json({ error: e instanceof Error ? e.message : 'Authentication required' });
+    return;
+  }
+
+  const requestSupabaseKey = requestScope.accessToken ? SUPABASE_ANON_KEY : supabaseKey;
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey: requestSupabaseKey,
+    Authorization: `Bearer ${requestScope.accessToken || requestSupabaseKey}`,
+  };
+
   const capturedId = typeof req.body?.captured_id === 'string' ? req.body.captured_id : '';
   if (!capturedId) {
     res.status(400).json({ error: 'Missing captured_id' });
     return;
   }
-
-  const headers = {
-    'Content-Type': 'application/json',
-    apikey: supabaseKey,
-    Authorization: `Bearer ${supabaseKey}`,
-  };
-
   try {
-    // 1. 查询该行
-    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${capturedId}&select=id,title,summary,content,tags&limit=1`;
+    const scopeQuery = requestScope.isDemo
+      ? `scope_id=eq.${encodeURIComponent(requestScope.scopeId)}`
+      : `user_id=eq.${encodeURIComponent(requestScope.scopeId)}`;
+    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${capturedId}&${scopeQuery}&select=id,title,summary,content,tags&limit=1`;
     const queryResp = await fetch(queryUrl, { headers });
 
     if (!queryResp.ok) {
