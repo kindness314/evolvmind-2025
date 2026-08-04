@@ -1,7 +1,9 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Pin, Trash2, FileText, Image as ImageIcon, Mic, File, Sparkles, Loader2, AlertTriangle, Pencil, Save, X } from 'lucide-react';
+import { ArrowLeft, Pin, Trash2, FileText, Image as ImageIcon, Mic, File, Sparkles, Loader2, AlertTriangle, Pencil, Save, X, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
+import { retryEmbedding, retryGraphBuild } from '../../lib/processing';
+import { ProcessingStatusBadge } from './ui/ProcessingStatusBadge';
 
 interface ItemDetailPageProps {
   itemId: string;
@@ -19,6 +21,10 @@ interface ItemDetail {
   note: string | null;
   created_at: string;
   is_pinned: boolean;
+  processing_status?: string;
+  embedding_status?: string;
+  graph_status?: string;
+  processing_error?: string | null;
 }
 
 const typeIcons = {
@@ -35,6 +41,19 @@ const typeLabels = {
   import: '导入文件'
 };
 
+const stepStatusLabel: Record<string, { text: string; className: string }> = {
+  pending: { text: '待处理', className: 'text-gray-400' },
+  processing: { text: '处理中', className: 'text-amber-600' },
+  done: { text: '已完成', className: 'text-green-600' },
+  error: { text: '失败', className: 'text-red-600' },
+  skipped: { text: '已跳过', className: 'text-gray-400' },
+};
+
+function StepStatus({ status }: { status?: string }) {
+  const s = stepStatusLabel[status || 'pending'] || stepStatusLabel.pending;
+  return <span className={`text-xs font-medium ${s.className}`}>{s.text}</span>;
+}
+
 export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps) {
   const [item, setItem] = useState<ItemDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,6 +64,8 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
   const [draftTitle, setDraftTitle] = useState('');
   const [draftNote, setDraftNote] = useState('');
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [isRetryingEmbed, setIsRetryingEmbed] = useState(false);
+  const [isRetryingGraph, setIsRetryingGraph] = useState(false);
 
   useEffect(() => {
     fetchItemDetail();
@@ -67,6 +88,34 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
       console.error('获取详情失败:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRetryEmbed = async () => {
+    if (!item || isRetryingEmbed) return;
+    setIsRetryingEmbed(true);
+    try {
+      await retryEmbedding(item.id);
+      setTimeout(() => fetchItemDetail(), 3000);
+    } catch (error) {
+      console.error('embedding 重试失败:', error);
+      alert('重试失败，请稍后重试');
+    } finally {
+      setIsRetryingEmbed(false);
+    }
+  };
+
+  const handleRetryGraph = async () => {
+    if (!item || isRetryingGraph) return;
+    setIsRetryingGraph(true);
+    try {
+      await retryGraphBuild(item);
+      await fetchItemDetail();
+    } catch (error) {
+      console.error('图谱重试失败:', error);
+      await fetchItemDetail();
+    } finally {
+      setIsRetryingGraph(false);
     }
   };
 
@@ -263,6 +312,62 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                 <span className="text-xs font-bold text-blue-600 uppercase tracking-wider">AI 智能摘要</span>
               </div>
               <p className="text-sm text-blue-800 leading-relaxed">{item.summary}</p>
+            </div>
+          )}
+
+          {/* O1: 处理状态 */}
+          {(item.processing_status || item.embedding_status || item.graph_status) && (
+            <div className="mb-8 p-4 bg-gray-50 border border-gray-200" style={{ borderRadius: '4px' }}>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-bold text-gray-900">处理状态</h3>
+                <ProcessingStatusBadge
+                  info={{
+                    processing_status: item.processing_status as any,
+                    embedding_status: item.embedding_status as any,
+                    graph_status: item.graph_status as any,
+                    processing_error: item.processing_error,
+                  }}
+                />
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">向量化（语义搜索）</span>
+                  <div className="flex items-center gap-2">
+                    <StepStatus status={item.embedding_status} />
+                    {item.embedding_status === 'error' && (
+                      <button
+                        onClick={handleRetryEmbed}
+                        disabled={isRetryingEmbed}
+                        className="flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-600 text-xs hover:bg-blue-100 transition-colors disabled:opacity-50"
+                        style={{ borderRadius: '4px' }}
+                      >
+                        {isRetryingEmbed ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                        重试
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">知识图谱构建</span>
+                  <div className="flex items-center gap-2">
+                    <StepStatus status={item.graph_status} />
+                    {item.graph_status === 'error' && (
+                      <button
+                        onClick={handleRetryGraph}
+                        disabled={isRetryingGraph}
+                        className="flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-600 text-xs hover:bg-blue-100 transition-colors disabled:opacity-50"
+                        style={{ borderRadius: '4px' }}
+                      >
+                        {isRetryingGraph ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                        重试
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {item.processing_error && (
+                  <p className="text-xs text-red-600 mt-2 break-words">错误：{item.processing_error}</p>
+                )}
+              </div>
             </div>
           )}
 

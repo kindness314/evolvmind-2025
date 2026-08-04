@@ -5,6 +5,7 @@ import { supabase } from '../../lib/supabase';
 import { semanticSearch, type SearchResult } from '../../lib/search';
 import { fetchSummary, type SummaryResponse, type SummaryPeriod } from '../../lib/summarize';
 import { fetchRecommendations, type Recommendation } from '../../lib/recommend';
+import { ProcessingStatusBadge } from './ui/ProcessingStatusBadge';
 
 interface InfoCard {
   id: string;
@@ -14,6 +15,10 @@ interface InfoCard {
   timestamp: string;
   tags: string[];
   is_pinned: boolean;
+  processing_status?: string;
+  embedding_status?: string;
+  graph_status?: string;
+  processing_error?: string | null;
 }
 
 type HomeDestination = 'capture' | 'knowledge' | 'item-detail';
@@ -150,7 +155,11 @@ export function HomePage({ onNavigate }: HomePageProps) {
           content: item.content || item.summary || '',
           timestamp: new Date(item.created_at).toLocaleString(),
           tags: item.tags || [],
-          is_pinned: item.is_pinned || false
+          is_pinned: item.is_pinned || false,
+          processing_status: item.processing_status || undefined,
+          embedding_status: item.embedding_status || undefined,
+          graph_status: item.graph_status || undefined,
+          processing_error: item.processing_error || null,
         }));
         setData(formattedData);
       }
@@ -549,6 +558,14 @@ export function HomePage({ onNavigate }: HomePageProps) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <h3 className="font-medium text-gray-900 truncate">{item.title}</h3>
+                      <ProcessingStatusBadge
+                        info={{
+                          processing_status: item.processing_status as any,
+                          embedding_status: item.embedding_status as any,
+                          graph_status: item.graph_status as any,
+                          processing_error: item.processing_error,
+                        }}
+                      />
                       {item.similarity != null && (
                         <span className="flex-none px-1.5 py-0.5 bg-purple-100 text-purple-700 text-xs font-medium" style={{ borderRadius: '4px' }}>
                           {Math.round(item.similarity * 100)}%
