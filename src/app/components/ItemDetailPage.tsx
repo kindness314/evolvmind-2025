@@ -122,8 +122,8 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
     setIsDeleting(true);
     try {
       // 1. 如果是云端存储的文件，尝试从 Storage 删除 (可选，这里为简化主要删除数据库记录)
-      if (item.content.startsWith('http')) {
-        const filePath = item.content.split('captured-files/')[1];
+      if (item.content.startsWith('http') && item.content.includes('captured-files/')) {
+        const filePath = item.content.split('captured-files/')[1].split('?')[0];
         if (filePath) {
           await supabase.storage.from('captured-files').remove([filePath]);
         }
