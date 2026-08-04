@@ -9,6 +9,22 @@ const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJ
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
+/** 更新 captured_info 的 embedding 处理状态（失败时记录错误信息） */
+async function updateEmbeddingStatus(params: {
+  capturedId: string;
+  status: 'processing' | 'done' | 'error' | 'skipped';
+  error?: string;
+  headers: Record<string, string>;
+}): Promise<void> {
+  const body: Record<string, unknown> = { embedding_status: params.status };
+  if (params.error) body.processing_error = params.error.slice(0, 1000);
+  await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${params.capturedId}`, {
+    method: 'PATCH',
+    headers: params.headers,
+    body: JSON.stringify(body),
+  });
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method Not Allowed' });
@@ -69,6 +85,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const row = rows[0];
     const text = buildEmbeddingText(row);
     if (!text.trim()) {
+      await updateEmbeddingStatus({ capturedId, status: 'skipped', headers });
       res.status(200).json({ ok: true, skipped: true, message: '空内容，跳过' });
       return;
     }
@@ -82,17 +99,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const updateResp = await fetch(updateUrl, {
       method: 'PATCH',
       headers,
-      body: JSON.stringify({ embedding: embeddingStr }),
+      body: JSON.stringify({ embedding: embeddingStr, embedding_status: 'done' }),
     });
 
     if (!updateResp.ok) {
       const errText = await updateResp.text();
+      await updateEmbeddingStatus({ capturedId, status: 'error', error: errText, headers });
       res.status(updateResp.status).json({ error: 'Supabase update error', detail: errText });
       return;
     }
 
     res.status(200).json({ ok: true, id: capturedId, model });
   } catch (e: any) {
-    res.status(500).json({ error: 'Embed failed', detail: e.message });
+    const message = e instanceof Error ? e.message : String(e);
+    try {
+      await updateEmbeddingStatus({ capturedId, status: 'error', error: message, headers });
+    } catch {
+      // 状态写入失败不影响主错误返回
+    }
+    res.status(500).json({ error: 'Embed failed', detail: message });
   }
 }

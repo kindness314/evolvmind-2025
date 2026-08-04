@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase';
 import { extractInformation } from '../../lib/ai';
 import { buildKnowledgeGraphFromContent, checkGraphSetup } from '../../lib/graph';
 import { generateEmbeddingForRow } from '../../lib/search';
+import { updateProcessingFields } from '../../lib/processing';
 import { motion } from 'motion/react';
 
 type CaptureMode = 'text' | 'photo' | 'audio' | 'import' | null;
@@ -162,7 +163,10 @@ export function CapturePage({ onNavigate }: CapturePageProps) {
         title: extractedData.title,
         content: finalContent,
         tags: extractedData.keywords,
-        summary: extractedData.summary
+        summary: extractedData.summary,
+        processing_status: 'processing',
+        embedding_status: 'pending',
+        graph_status: 'pending'
         })
         .select('id')
         .single();
@@ -200,20 +204,29 @@ export function CapturePage({ onNavigate }: CapturePageProps) {
               : '数据库未应用图谱迁移';
             setGraphError(msg);
             setGraphStatus('error');
+            await updateProcessingFields({ id: itemId, graph_status: 'error', processing_status: 'error', processing_error: msg });
             return;
           }
           if (!setup.llmOk) {
             setGraphError('LLM 未配置');
             setGraphStatus('error');
+            await updateProcessingFields({ id: itemId, graph_status: 'error', processing_status: 'error', processing_error: 'LLM 未配置' });
             return;
           }
           const result = await buildKnowledgeGraphFromContent({ content: contentForGraph, capturedId: itemId });
           setGraphResult(result);
           setGraphStatus('done');
+          await updateProcessingFields({ id: itemId, graph_status: 'done', processing_status: 'done', processed_at: new Date().toISOString() });
         } catch (e: any) {
           console.error('知识图谱更新失败:', e);
-          setGraphError(e.message || '图谱构建失败');
+          const msg = e.message || '图谱构建失败';
+          setGraphError(msg);
           setGraphStatus('error');
+          try {
+            await updateProcessingFields({ id: itemId, graph_status: 'error', processing_status: 'error', processing_error: msg });
+          } catch {
+            // 状态写入失败不影响页面反馈
+          }
         }
       })();
     } catch (error) {
