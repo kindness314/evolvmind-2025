@@ -95,7 +95,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const nodesScopeFilter = requestScope.isDemo
       ? 'user_id=is.null'
       : `user_id=eq.${encodeURIComponent(scopeId)}`;
-    const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids&${nodesScopeFilter}&order=created_at.desc&limit=40`;
+    const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids&${nodesScopeFilter}&order=created_at.desc&limit=500`;
     const nodesResp = await fetch(nodesUrl, { headers });
     if (!nodesResp.ok) {
       const detail = await nodesResp.text();
@@ -106,7 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const linksScopeFilter = requestScope.isDemo
       ? 'user_id=is.null'
       : `user_id=eq.${encodeURIComponent(scopeId)}`;
-    const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=source,target&${linksScopeFilter}&limit=200`;
+    const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=source,target&${linksScopeFilter}&limit=500`;
     const linksResp = await fetch(linksUrl, { headers });
     if (!linksResp.ok) {
       const detail = await linksResp.text();
@@ -132,12 +132,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (typeof cid === 'string') linkedCapturedIds.add(cid);
         }
       }
-    }
-    const nodeDegree = new Map<string, number>();
-
-    for (const link of links) {
-      nodeDegree.set(link.source, (nodeDegree.get(link.source) || 0) + 1);
-      nodeDegree.set(link.target, (nodeDegree.get(link.target) || 0) + 1);
     }
 
     // --- Rule 1: review — 未关联到知识节点的近期捕获 ---

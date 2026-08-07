@@ -8,7 +8,7 @@
  *             "newConnections": [...], "nextActions": [...], "stats": {...} }
  */
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
-import { resolveRequestScope } from './_lib/requestScope.js';
+import { resolveRequestScope, type RequestScope } from './_lib/requestScope.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
@@ -168,13 +168,13 @@ interface NodeRow {
 
 interface LinkRow {
   id: string;
-  node_id: string;
-  linked_node_id: string;
+  source: string;
+  target: string;
   relation_type: string;
   evidence_captured_ids: string[];
   created_at: string;
-  node_name?: string;
-  linked_node_name?: string;
+  source_node?: { name: string } | null;
+  target_node?: { name: string } | null;
 }
 
 interface AggregatedData {
@@ -187,7 +187,7 @@ interface AggregatedData {
 }
 
 async function aggregateData(
-  scopeId: string,
+  scope: RequestScope,
   since: string,
   supabaseKey: string,
 ): Promise<AggregatedData> {
@@ -197,25 +197,26 @@ async function aggregateData(
     Authorization: `Bearer ${supabaseKey}`,
   };
 
-  // 查询 captured_info（含 scope 过滤）
-  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,tags,created_at&created_at=gte.${encodeURIComponent(since)}&scope_id=eq.${encodeURIComponent(scopeId)}&order=created_at.desc&limit=50`;
+  // 查询 captured_info（captured_info 无 scope_id 列，demo 用 user_id IS NULL，真实用户用 user_id = scopeId）
+  const capturedFilter = scope.isDemo ? 'user_id=is.null' : `user_id=eq.${encodeURIComponent(scope.scopeId)}`;
+  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,tags,created_at&created_at=gte.${encodeURIComponent(since)}&${capturedFilter}&order=created_at.desc&limit=50`;
   const capturedResp = await fetch(capturedUrl, { headers });
   const captured: CapturedRow[] = capturedResp.ok ? (await capturedResp.json()) as CapturedRow[] : [];
 
-  // 查询 knowledge_nodes
-  const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=30`;
+  // 查询 knowledge_nodes（该表有 scope_id 生成列）
+  const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=100`;
   const nodesResp = await fetch(nodesUrl, { headers });
   const nodes: NodeRow[] = nodesResp.ok ? (await nodesResp.json()) as NodeRow[] : [];
 
-  // 查询 knowledge_links（通过关联节点限 scope）
-  const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,node_id,linked_node_id,relation_type,evidence_captured_ids,created_at,node:node_id(name),linked_node:linked_node_id(name)&created_at=gte.${encodeURIComponent(since)}&limit=40`;
+  // 查询 knowledge_links（列名为 source/target，通过 FK 嵌入节点名；links 有 scope_id 生成列）
+  const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,source,target,relation_type,evidence_captured_ids,created_at,source_node:knowledge_nodes!knowledge_links_source_fkey(name),target_node:knowledge_nodes!knowledge_links_target_fkey(name)&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=200`;
   const linksResp = await fetch(linksUrl, { headers });
   const rawLinks: LinkRow[] = linksResp.ok ? (await linksResp.json()) as LinkRow[] : [];
 
   // 只保留两端至少一端在 scope 内的链接
   const scopeNodeIds = new Set(nodes.map((n) => n.id));
   const scopeLinks = rawLinks.filter(
-    (l) => scopeNodeIds.has(l.node_id) || scopeNodeIds.has(l.linked_node_id),
+    (l) => scopeNodeIds.has(l.source) || scopeNodeIds.has(l.target),
   );
 
   // 聚合标签频率
@@ -241,8 +242,8 @@ async function aggregateData(
       createdAt: n.created_at,
     })),
     linkList: scopeLinks.map((l) => ({
-      from: l.node_name || '未知',
-      to: l.linked_node_name || '未知',
+      from: l.source_node?.name || '未知',
+      to: l.target_node?.name || '未知',
       type: l.relation_type,
     })),
   };
@@ -386,7 +387,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       anonKey: SUPABASE_ANON_KEY,
     });
     const queryToken = requestScope.accessToken || supabaseKey;
-    const agg = await aggregateData(requestScope.scopeId, since, queryToken);
+    const agg = await aggregateData(requestScope, since, queryToken);
 
     // 无数据时直接返回空状态
     if (agg.capturedCount === 0 && agg.newNodeCount === 0) {
