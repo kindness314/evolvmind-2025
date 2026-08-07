@@ -1,10 +1,12 @@
 import { Type, Camera, Mic, FileUp, Save, X, Loader2, Play, Pause, Trash2, Sparkles, CheckCircle2, ArrowRight, Home, Share2, FileText, AlertCircle } from 'lucide-react';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { extractInformation } from '../../lib/ai';
-import { buildKnowledgeGraphFromContent, checkGraphSetup } from '../../lib/graph';
+import { buildKnowledgeGraphFromContent, checkGraphSetup, stringifyError } from '../../lib/graph';
 import { generateEmbeddingForRow } from '../../lib/search';
+import { analyzeAndPersist } from '../../lib/process';
 import { motion } from 'motion/react';
+import { toast } from 'sonner';
 
 type CaptureMode = 'text' | 'photo' | 'audio' | 'import' | null;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -36,9 +38,11 @@ interface SavedItem {
 
 interface CapturePageProps {
   onNavigate?: (page: string, itemId?: string) => void;
+  /** 捕获页当前是否可见: 处理完成自动回数据页时, 用户已离开则不再跳转 */
+  active?: boolean;
 }
 
-export function CapturePage({ onNavigate }: CapturePageProps) {
+export function CapturePage({ onNavigate, active }: CapturePageProps) {
   const [mode, setMode] = useState<CaptureMode>(null);
   const [textInput, setTextInput] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -46,19 +50,75 @@ export function CapturePage({ onNavigate }: CapturePageProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [extractedData, setExtractedData] = useState({
-    title: '智能提取标题',
-    keywords: ['关键词1', '关键词2', '关键词3'],
-    summary: '这里显示AI提取的摘要内容...'
+    title: '',
+    keywords: [] as string[],
+    summary: ''
   });
 
   const [isSaving, setIsSaving] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
   // P0: 捕获结果状态
   const [savedItem, setSavedItem] = useState<SavedItem | null>(null);
   const [graphStatus, setGraphStatus] = useState<'idle' | 'processing' | 'done' | 'error'>('idle');
   const [graphResult, setGraphResult] = useState<GraphProcessResult | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
+  const persistGraphStatus = async (itemId: string, status: 'completed' | 'failed', errorMessage?: string) => {
+    if (!itemId) return;
+    if (status === 'completed') {
+      const patch: Record<string, unknown> = { graph_status: 'completed', processed_at: new Date().toISOString() };
+      // O1: 成功只更新 graph_status; 若 embedding 也已 completed 则整体完成,
+      // 避免 processing_status 永远停在 'processing'
+      const { data: cur } = await supabase
+        .from('captured_info')
+        .select('embedding_status, processing_status')
+        .eq('id', itemId)
+        .single();
+      if (cur && cur.embedding_status === 'completed') {
+        patch.processing_status = 'completed';
+      }
+      await supabase.from('captured_info').update(patch).eq('id', itemId);
+      return;
+    }
+    const patch: Record<string, string | null> = {
+      graph_status: 'failed',
+      processing_status: 'failed',
+    };
+    if (errorMessage) {
+      patch.processing_error = `graph: ${errorMessage.slice(0, 500)}`;
+    }
+    await supabase.from('captured_info').update(patch).eq('id', itemId);
+  };
+
+  // 处理完成追踪: 图谱与向量均结束且无失败时, 若用户仍在捕获页, 自动回到首页
+  const graphSettledRef = useRef(false);
+  const embedSettledRef = useRef(false);
+  const graphFailedRef = useRef(false);
+  const embedFailedRef = useRef(false);
+  const activeRef = useRef(false);
+  useEffect(() => {
+    activeRef.current = !!active;
+  }, [active]);
+
+  const tryAutoReturnData = () => {
+    if (!graphSettledRef.current || !embedSettledRef.current) return;
+    if (graphFailedRef.current || embedFailedRef.current) return;
+    if (!activeRef.current) return;
+    // 短暂停留让用户看到"处理完成"面板, 再自动回数据页; 并重置捕获页便于下次使用
+    window.setTimeout(() => {
+      onNavigate?.('data');
+      setSavedItem(null);
+      setGraphStatus('idle');
+      setGraphResult(null);
+      setGraphError(null);
+      setMode(null);
+      setTextInput('');
+      setFile(null);
+      setPreviewUrl(null);
+      setExtractedData({ title: '', keywords: [], summary: '' });
+    }, 800);
+  };
+
 
   const captureOptions = [
     { id: 'text', icon: Type, label: '文字', color: 'bg-blue-50 hover:bg-blue-100', accept: '' },
@@ -92,38 +152,16 @@ export function CapturePage({ onNavigate }: CapturePageProps) {
     if (file && previewUrl) URL.revokeObjectURL(previewUrl);
     setFile(selectedFile);
     const url = URL.createObjectURL(selectedFile);
+    setAnalyzeError(null);
     setPreviewUrl(url);
     setExtractedData({
       title: selectedFile.name.split('.')[0],
       keywords: [selectedFile.type.split('/')[0] || '文件', '新导入'],
-      summary: `成功导入了 ${selectedFile.name}，点击下方按钮开始 AI 智能分析内容...`
+      summary: `成功导入了 ${selectedFile.name}，保存时将自动提取标题、关键词与摘要。`
     });
   };
 
-  const handleAnalyze = async () => {
-    let contentToAnalyze = '';
-    
-    if (mode === 'text') {
-      contentToAnalyze = textInput;
-    } else if (file) {
-      contentToAnalyze = `文件名: ${file.name}\n文件类型: ${file.type}\n文件大小: ${file.size} bytes`;
-      // 注意：这里由于没有实际的 OCR 或音频转录后端，我们只分析文件元数据。
-      // 在实际项目中，应先调用 OCR/ASR 接口获取文本。
-    }
-
-    if (!contentToAnalyze) return;
-
-    setIsAnalyzing(true);
-    try {
-      const result = await extractInformation(contentToAnalyze);
-      setExtractedData(result);
-    } catch (error) {
-      console.error('AI 分析失败:', error);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
+  // O1: 标题/关键词/摘要提取已改为保存时自动执行(见 handleSave -> analyzeAndPersist), 不再手动触发
   const handleSave = async () => {
     if (file && (file.size > MAX_FILE_SIZE || !isSupportedFile(file, mode))) {
       alert('文件无效：大小必须不超过 10MB，且类型必须受支持');
@@ -154,40 +192,84 @@ export function CapturePage({ onNavigate }: CapturePageProps) {
         finalContent = signedUrlData.signedUrl;
 
       }
-
+      // O1: 初始状态: 子步骤 pending, 保存后自动分析再推进; 原文先保存(不变量)
+      const initialTitle = file
+        ? file.name.split('.')[0]
+        : (textInput.trim().slice(0, 30) || '未命名');
       const { data, error } = await supabase
         .from('captured_info')
         .insert({
-        type: mode,
-        title: extractedData.title,
-        content: finalContent,
-        tags: extractedData.keywords,
-        summary: extractedData.summary
+          type: mode,
+          title: extractedData.title.trim() || initialTitle,
+          content: finalContent,
+          tags: [],
+          summary: '',
+          processing_status: 'processing',
+          graph_status: 'pending',
+          embedding_status: 'pending',
         })
         .select('id')
         .single();
 
       if (error) throw error;
-
-      // 记录保存结果
       const itemId = data?.id;
+      if (!itemId) throw new Error('保存失败: 未返回记录 ID');
+      // 通知数据页立即增量同步, 避免新数据等 30s 轮询才出现
+      window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
+
+      // O1: 保存后自动提取标题/关键词/摘要(不再手动触发), 成败并入处理状态
+      const contentToAnalyze =
+        mode === 'text'
+          ? textInput
+          : `文件名: ${file?.name || ''}\n文件类型: ${file?.type || ''}\n文件大小: ${file?.size || 0} bytes`;
+      setAnalyzeError(null);
+      const outcome = await analyzeAndPersist(itemId, contentToAnalyze);
+      if (!outcome.ok) {
+        const msg = outcome.error || '内容分析失败';
+        setAnalyzeError(msg);
+        toast.error('内容分析失败', { description: msg });
+        // 内容已安全保存; 分析失败 -> 行已标 failed, 首页/详情页可"重试"重跑提取
+        setSavedItem({
+          id: itemId,
+          title: extractedData.title.trim() || initialTitle,
+          summary: '内容已保存, 但自动提取标题/摘要失败。可在首页对该记录点击"重试"重新提取。',
+          keywords: [],
+        });
+        setGraphError(msg);
+        setGraphStatus('error');
+        return;
+      }
+
+      // 分析成功: 更新预览与结果卡
+      setExtractedData({ title: outcome.title, keywords: outcome.keywords, summary: outcome.summary });
       setSavedItem({
-        id: itemId || '',
-        title: extractedData.title,
-        summary: extractedData.summary,
-        keywords: extractedData.keywords,
+        id: itemId,
+        title: outcome.title,
+        summary: outcome.summary,
+        keywords: outcome.keywords,
       });
 
-      // fire-and-forget: 为新记录生成 embedding 向量
-      if (itemId) {
-        generateEmbeddingForRow(itemId);
-      }
+      // fire-and-forget: 为新记录生成 embedding 向量; 失败已在函数内落 failed;
+      // 无论成败都通知数据页增量刷新, 并参与"全部完成自动回数据页"判定
+      void generateEmbeddingForRow(itemId)
+        .then(() => {
+          embedSettledRef.current = true;
+          embedFailedRef.current = false;
+          window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
+          tryAutoReturnData();
+        })
+        .catch(() => {
+          embedSettledRef.current = true;
+          embedFailedRef.current = true;
+          toast.error('向量生成失败，可在数据页重试');
+          window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
+        });
 
       // 启动知识图谱构建并追踪状态
       const contentForGraph =
         mode === 'text'
           ? textInput
-          : `标题: ${extractedData.title}\n摘要: ${extractedData.summary}\n关键词: ${extractedData.keywords.join(', ')}\n资源: ${finalContent}`;
+          : `标题: ${outcome.title}\n摘要: ${outcome.summary}\n关键词: ${outcome.keywords.join(', ')}\n资源: ${finalContent}`;
 
       setGraphStatus('processing');
 
@@ -200,20 +282,36 @@ export function CapturePage({ onNavigate }: CapturePageProps) {
               : '数据库未应用图谱迁移';
             setGraphError(msg);
             setGraphStatus('error');
+            await persistGraphStatus(itemId, 'failed', msg);
+            graphFailedRef.current = true;
             return;
           }
           if (!setup.llmOk) {
-            setGraphError('LLM 未配置');
+            const msg = 'LLM 未配置';
+            setGraphError(msg);
             setGraphStatus('error');
+            await persistGraphStatus(itemId, 'failed', msg);
+            graphFailedRef.current = true;
             return;
           }
           const result = await buildKnowledgeGraphFromContent({ content: contentForGraph, capturedId: itemId });
           setGraphResult(result);
           setGraphStatus('done');
-        } catch (e: any) {
+          await persistGraphStatus(itemId, 'completed');
+          graphSettledRef.current = true;
+          graphFailedRef.current = false;
+        } catch (e: unknown) {
           console.error('知识图谱更新失败:', e);
-          setGraphError(e.message || '图谱构建失败');
+          const msg = stringifyError(e);
+          setGraphError(msg);
           setGraphStatus('error');
+          await persistGraphStatus(itemId, 'failed', msg);
+          graphSettledRef.current = true;
+          graphFailedRef.current = true;
+        } finally {
+          // 无论成功失败: 通知数据页增量刷新, 并尝试自动回数据页
+          window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
+          tryAutoReturnData();
         }
       })();
     } catch (error) {
@@ -237,6 +335,7 @@ export function CapturePage({ onNavigate }: CapturePageProps) {
     setGraphStatus('idle');
     setGraphResult(null);
     setGraphError(null);
+    setAnalyzeError(null);
   };
 
   return (
@@ -516,19 +615,10 @@ export function CapturePage({ onNavigate }: CapturePageProps) {
               >
                 <div className="flex items-center justify-between mb-3">
                   <h4 className="text-sm font-medium text-gray-900">提取结果预览</h4>
-                  <button
-                    onClick={handleAnalyze}
-                    disabled={isAnalyzing || (!textInput && !file)}
-                    className="flex items-center gap-1.5 px-3 py-1 bg-purple-100 text-purple-700 text-xs hover:bg-purple-200 transition-colors disabled:opacity-50"
-                    style={{ borderRadius: '4px' }}
-                  >
-                    {isAnalyzing ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <Sparkles className="w-3 h-3" />
-                    )}
-                    {isAnalyzing ? '分析中...' : 'AI 智能提取'}
-                  </button>
+                  <span className="flex items-center gap-1.5 px-3 py-1 bg-purple-50 text-purple-700 text-xs">
+                    <Sparkles className="w-3 h-3" />
+                    保存时自动提取
+                  </span>
                 </div>
                 
                 <div className="mb-3">

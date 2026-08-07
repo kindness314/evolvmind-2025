@@ -1,5 +1,7 @@
 import { buildKnowledgeNodeEmbeddingText, generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
 import { resolveRequestScope } from '../_lib/requestScope.js';
+// Vercel Hobby 默认函数时长 10s, 节点 embedding 批量调用需留出余量
+export const maxDuration = 60;
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';

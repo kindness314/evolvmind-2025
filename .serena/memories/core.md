@@ -1,0 +1,14 @@
+# EvolvMind core
+
+- Source map: `src/app/` contains state-managed SPA entry/components; `src/lib/` shared Supabase/AI/graph/search logic; `api/` Vercel serverless handlers; `supabase/migrations/` schema/RLS history; `utils/` helpers.
+- Capture pipeline: CapturePage saves raw `captured_info`/Storage, then `/api/extract` and `/api/graph/extract` produce structured content and graph nodes/links; embeddings/search run through server APIs.
+- Routing invariant: no react-router/URL routing. `App.tsx` owns `activeTab` navigation; a new page requires a new tab value and conditional render.
+- Scope invariant: Demo mode (`localStorage.demo_auth === 'true'`) uses shared fixed scope UUID `00000000-0000-0000-0000-000000000000`; real requests use authenticated Supabase user scope. Never trust client-provided user/scope fields.
+- Security invariant: `MINIMAX_API_KEY` is server-only; frontend calls project `/api/*` only. File uploads are limited to allowed image/audio/document types and 10 MiB before Storage upload.
+- Database invariant: schema/RLS/Storage changes are migration files applied through Supabase CLI, not Dashboard manual edits.
+- Read `mem:tech_stack` for dependency/runtime pins, `mem:conventions` for project-specific patterns, `mem:suggested_commands` for Windows workflows, `mem:task_completion` for final verification commands, and `mem:ux-pain-points` for user-facing experience gaps to address across optimization phases.
+
+- Login: Email OTP 已上线并通过真实 A/B 隔离验收（13/13 PASS，2026-07-25，提交 `2fa3a2b`）；`LoginPage.tsx` 支持邮箱/手机号 Tab，均走 6 位验证码流程。Supabase Email 模板必须用 `{{ .Token }}`（OTP 码）而非 `{{ .ConfirmationURL }}`（Magic Link）。实际发件走 Supabase Custom SMTP（163 邮箱）；Brevo 方案未采用。手机号方向仍 BLOCKED（Twilio Trial + 中国短信），与 Email 验收分开记录。验收脚本见 `mem:acceptance/email-otp-ab-verification`。
+- User scope: 服务端经 `api/_lib/requestScope.ts` 从 Bearer token 解析真实 scope（提交 `a2b4864`），禁止信任请求体 `user_id`/`scope_id`；普通请求不得无条件 fallback service role。
+- O1 捕获处理状态(2026-08-06 完成,迁移 `20260806000000_add_processing_status.sql` 已应用正式库):`captured_info` 新增 `processing_status`/`embedding_status`/`graph_status`(枚举 pending|processing|completed|failed)+ `processing_error` + `processed_at`。CapturePage insert 三状态初始 `processing`;`api/embed.ts`/`api/backfill.ts` 回写 embedding 状态;`src/lib/graph.ts` 的 `retryGraphForCaptured` 供 HomePage/ItemDetailPage 重试失败步骤。已修复 demo scope 查询 bug:demo 行 `user_id IS NULL`(RLS demo 策略),API 必须用 `user_id=is.null` 查询 captured_info,不可用 `scope_id` 列(captured_info 无此列;knowledge_nodes 才有)。存量行默认 `pending`,经回填/重试转 completed。
+- 2026-08-07 working tree（未 commit）：`mem:incremental-refresh-and-graph-speedup-2026-08-07`（DataPage 增量同步 + KnowledgePage 列裁剪 + keep-alive 切 tab）、`mem:status-update-autoreturn-fonts-2026-08-07`（首页字号 + 状态即时翻转 + 自动回数据页 + JSON 引号修复）、`mem:pending-ui-ux-issues-2026-08-06`（三项 UI/UX 已实施）。处理链路修复见 `mem:fix-processing-chain-2026-08-06`。

@@ -585,9 +585,11 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
   const fetchGraphData = async () => {
     setLoading(true);
     try {
+      // 列裁剪(不含 embedding 向量列): select('*') 会把 1536 维向量序列化成巨大 JSON,
+      // 慢网络下 30 节点即达数百 KB, 是图谱加载慢的主因; graph.ts 等其他调用均已只选具体列
       const [nodesResponse, linksResponse] = await Promise.all([
-        supabase.from('knowledge_nodes').select('*'),
-        supabase.from('knowledge_links').select('*')
+        supabase.from('knowledge_nodes').select('id,name,val,color,kind,aliases,source_captured_ids,metadata,created_at'),
+        supabase.from('knowledge_links').select('id,source,target,relation_type,evidence_captured_ids,confidence,created_at')
       ]);
 
       if (nodesResponse.error) throw nodesResponse.error;

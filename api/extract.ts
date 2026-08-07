@@ -19,6 +19,8 @@ type ExtractedInfo = {
 };
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
+// Vercel Hobby 默认函数时长 10s, 而 LLM 上游单次生成实测需 8-54s, 必须提到 60s 上限
+export const maxDuration = 60;
 
 function stripTrailingV1(url: string) {
   return url.replace(/\/v1\/?$/, '');
@@ -30,6 +32,64 @@ function safeJsonParse(text: string): any {
   } catch {
     return null;
   }
+}
+
+/**
+ * 修复 LLM 输出 JSON 中字符串值里未转义的 ASCII 引号
+ * （例如 MiniMax 常输出 "由"处理中"切换" 这类内嵌引号，会导致 JSON.parse 失败）。
+ * 仅在结构上下文之外的裸引号才转义，合法 JSON 不受影响。
+ */
+function repairUnescapedQuotes(text: string): string {
+  const s = (text || '').trim();
+  if (!s) return s;
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  const isOpenContext = (ch: string | undefined) => ch === ':' || ch === ',' || ch === '[' || ch === '{' || ch === undefined;
+  const isCloseContext = (ch: string | undefined) => ch === ',' || ch === '}' || ch === ']' || ch === ':' || ch === undefined;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        out += ch;
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        let j = i + 1;
+        while (j < s.length && /\s/.test(s[j])) j++;
+        const next = j >= s.length ? undefined : s[j];
+        if (next === ',' || next === '}' || next === ']' || next === ':' || next === undefined) {
+          out += ch;
+          inString = false;
+        } else {
+          out += '\\"';
+        }
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+    if (ch === '"') {
+      let k = i - 1;
+      while (k >= 0 && /\s/.test(s[k])) k--;
+      const prev = k < 0 ? undefined : s[k];
+      if (prev === ':' || prev === ',' || prev === '[' || prev === '{' || prev === undefined) {
+        out += ch;
+        inString = true;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 function extractFirstJsonObject(text: string): string | null {
@@ -133,6 +193,9 @@ function normalizeContentToJson(text: string): any {
     .trim();
   const direct = safeJsonParse(withoutFence);
   if (direct) return direct;
+  const repaired = safeJsonParse(repairUnescapedQuotes(withoutFence));
+  if (repaired) return repaired;
+
 
   const all = extractJsonObjects(withoutFence);
   if (all.length > 0) {

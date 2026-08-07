@@ -29,6 +29,62 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
+/**
+ * 修复 LLM 输出 JSON 中字符串值里未转义的 ASCII 引号
+ * （例如 MiniMax 常输出 "由"处理中"切换" 这类内嵌引号，会导致 JSON.parse 失败）。
+ * 仅在结构上下文之外的裸引号才转义，合法 JSON 不受影响。
+ */
+function repairUnescapedQuotes(text: string): string {
+  const s = (text || '').trim();
+  if (!s) return s;
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        out += ch;
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        let j = i + 1;
+        while (j < s.length && /\s/.test(s[j])) j++;
+        const next = j >= s.length ? undefined : s[j];
+        if (next === ',' || next === '}' || next === ']' || next === ':' || next === undefined) {
+          out += ch;
+          inString = false;
+        } else {
+          out += '\\"';
+        }
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+    if (ch === '"') {
+      let k = i - 1;
+      while (k >= 0 && /\s/.test(s[k])) k--;
+      const prev = k < 0 ? undefined : s[k];
+      if (prev === ':' || prev === ',' || prev === '[' || prev === '{' || prev === undefined) {
+        out += ch;
+        inString = true;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
 function extractJsonObjects(text: string): string[] {
   const s = (text || '').trim();
   const results: string[] = [];
@@ -70,6 +126,10 @@ function normalizeContentToJson(text: string): Record<string, unknown> | null {
 
   const direct = safeJsonParse(withoutFence) as Record<string, unknown> | null;
   if (direct) return direct;
+
+
+  const repaired = safeJsonParse(repairUnescapedQuotes(withoutFence)) as Record<string, unknown> | null;
+  if (repaired) return repaired;
 
   const all = extractJsonObjects(withoutFence);
   for (let idx = all.length - 1; idx >= 0; idx--) {

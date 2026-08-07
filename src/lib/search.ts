@@ -98,16 +98,37 @@ export async function requestBackfill(batchSize?: number): Promise<{
 }
 
 /**
- * 为单条记录生成 embedding — POST /api/embed (fire-and-forget)
+ * 为单条记录生成 embedding — POST /api/embed
+ * 请求 45s 超时; API 挂起/失败时落 failed 并抛错,
+ * 让批量一键处理能串行等待 embedding 完成并正确统计失败项
  */
-export function generateEmbeddingForRow(capturedId: string): void {
-  getApiAuthHeaders()
-    .then((headers) => fetch('/api/embed', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ captured_id: capturedId, demo: localStorage.getItem('demo_auth') === 'true' }),
-    }))
+export function generateEmbeddingForRow(capturedId: string): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45_000);
+  return getApiAuthHeaders()
+    .then((headers) =>
+      fetch('/api/embed', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ captured_id: capturedId, demo: localStorage.getItem('demo_auth') === 'true' }),
+        signal: controller.signal,
+      }),
+    )
+    .then((resp) => {
+      if (!resp.ok) {
+        throw new Error(`embedding API error: ${resp.status}`);
+      }
+    })
     .catch((e) => {
-      console.error('embedding 生成失败 (fire-and-forget):', e instanceof Error ? e.message : e);
-    });
+      console.error('embedding 生成失败:', e instanceof Error ? e.message : e);
+      // 请求超时/失败: 服务端未能回写时, 前端直接落 failed, 让用户看到红并可重试
+      return supabase
+        .from('captured_info')
+        .update({ embedding_status: 'failed', processing_status: 'failed', processing_error: 'embed: 请求超时或失败' })
+        .eq('id', capturedId)
+        .then(() => {
+          throw e instanceof Error ? e : new Error(String(e));
+        });
+    })
+    .finally(() => clearTimeout(timer));
 }

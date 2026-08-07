@@ -4,6 +4,8 @@
  */
 import { generateEmbedding, buildEmbeddingText, type VercelRequest, type VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope } from './_lib/requestScope.js';
+// Vercel Hobby 默认函数时长 10s, 批量回填可能串行处理多行, 需留出余量
+export const maxDuration = 60;
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
@@ -51,7 +53,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const scopeQuery = requestScope.isDemo
-      ? `scope_id=eq.${encodeURIComponent(requestScope.scopeId)}`
+      ? 'user_id=is.null'
       : `user_id=eq.${encodeURIComponent(requestScope.scopeId)}`;
     const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?embedding=is.null&${scopeQuery}&select=id,title,summary,content,tags&limit=${batchSize}`;
     const queryResp = await fetch(queryUrl, { headers });
@@ -76,30 +78,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       try {
         const text = buildEmbeddingText(row);
         if (!text.trim()) {
-          // 空内容跳过
+          // 空内容视为完成, 避免永久 pending
+          await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${row.id}`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify({ embedding_status: 'completed', processed_at: new Date().toISOString() }),
+          }).catch(() => {});
           continue;
         }
 
         const { embedding } = await generateEmbedding({ text, apiKey, baseUrl });
         const embeddingStr = `[${embedding.join(',')}]`;
 
-        // 更新该行的 embedding
+        // 更新该行的 embedding + 完成状态
         const updateUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${row.id}`;
         const updateResp = await fetch(updateUrl, {
           method: 'PATCH',
           headers,
-          body: JSON.stringify({ embedding: embeddingStr }),
+          body: JSON.stringify({ embedding: embeddingStr, embedding_status: 'completed', processed_at: new Date().toISOString() }),
         });
 
         if (!updateResp.ok) {
           const errText = await updateResp.text();
+          await fetch(updateUrl, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify({ embedding_status: 'failed', processing_status: 'failed', processing_error: `backfill update: ${errText.slice(0, 300)}` }),
+          }).catch(() => {});
           errors.push({ id: row.id, error: errText });
           continue;
         }
 
         processed++;
-      } catch (e: any) {
-        errors.push({ id: row.id, error: e.message });
+      } catch (e: unknown) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${row.id}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ embedding_status: 'failed', processing_status: 'failed', processing_error: `backfill: ${errMsg.slice(0, 500)}` }),
+        }).catch(() => {});
+        errors.push({ id: row.id, error: errMsg });
       }
     }
 
@@ -109,7 +127,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       total: rows.length,
       errors: errors.length > 0 ? errors : undefined,
     });
-  } catch (e: any) {
-    res.status(500).json({ error: 'Backfill failed', detail: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: 'Backfill failed', detail: e instanceof Error ? e.message : String(e) });
   }
 }

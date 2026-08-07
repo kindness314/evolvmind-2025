@@ -63,79 +63,116 @@ export async function generateEmbedding(params: {
     ]),
   );
 
-  let lastError: any = null;
+  let lastError: unknown = null;
+
+  // 429 退避重试: 上游 qpm(每分钟配额) 限流时等待后重试, 避免批量重试/回填时一次限流即判失败
+  const sleep = (ms: number) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, ms);
+    return promise;
+  };
+  const MAX_ATTEMPTS = 4; // 原始 1 次 + 退避重试 3 次 (2s/4s/8s)
 
   for (const model of models) {
     for (const url of urlsToTry) {
-      try {
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${params.apiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            input: params.text,
-          }),
-        });
-
-        if (resp.status === 404) {
-          // 该 URL 不支持 embeddings 端点，尝试下一个 URL
-          continue;
-        }
-
-        const data = safeJsonParse(await resp.text());
-
-        if (!resp.ok) {
-          const reason = data?.reason;
-          if (resp.status === 403 && reason === 'ModelNotAllowed') {
-            lastError = {
-              error: 'EmbeddingModelNotAllowed',
-              message: '当前 MINIMAX_API_KEY 没有该 embedding 模型权限，请配置可用的 1024 维 embedding 模型/Key 后重试。',
-              model,
-              providerError: data,
-              expectedDimensions: EXPECTED_EMBEDDING_DIMENSIONS,
-            };
-            break; // 换模型
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+        try {
+          // 30s 超时: embedding 上游实测 2s, 30s 足够且防挂起占满 maxDuration
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 30_000);
+          let resp: Response;
+          try {
+            resp = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${params.apiKey}`,
+              },
+              body: JSON.stringify({
+                model,
+                input: params.text,
+              }),
+              signal: controller.signal,
+            });
+          } finally {
+            clearTimeout(timer);
           }
-          // 其他错误，记录后继续
-          lastError = data || { status: resp.status };
-          continue;
-        }
 
-        // 提取 embedding 数组
-        const embedding = data?.data?.[0]?.embedding;
-        if (!Array.isArray(embedding)) {
-          lastError = { error: 'Invalid response format', raw: data };
-          continue;
-        }
+          if (resp.status === 429) {
+            // 限流: 记录错误并退避重试, 尝试耗尽才换 URL/模型
+            const data = safeJsonParse(await resp.text());
+            lastError = data || { status: 429 };
+            if (attempt < MAX_ATTEMPTS) {
+              await sleep(2000 * 2 ** (attempt - 1)); // 2s / 4s / 8s
+              continue;
+            }
+            break;
+          }
 
-        if (embedding.length !== EXPECTED_EMBEDDING_DIMENSIONS) {
-          lastError = {
-            error: 'EmbeddingDimensionMismatch',
-            message: `embedding 维度不匹配：当前数据库需要 ${EXPECTED_EMBEDDING_DIMENSIONS} 维向量。`,
-            model,
-            expected: EXPECTED_EMBEDDING_DIMENSIONS,
-            actual: embedding.length,
-          };
-          continue;
-        }
+          if (resp.status === 404) {
+            // 该 URL 不支持 embeddings 端点，尝试下一个 URL
+            break;
+          }
 
-        return { embedding, model };
-      } catch (e: any) {
-        lastError = { error: e.message };
-        continue;
+          const data = safeJsonParse(await resp.text());
+
+          if (!resp.ok) {
+            const reason = data?.reason;
+            if (resp.status === 403 && reason === 'ModelNotAllowed') {
+              lastError = {
+                error: 'EmbeddingModelNotAllowed',
+                message: '当前 MINIMAX_API_KEY 没有该 embedding 模型权限，请配置可用的 1024 维 embedding 模型/Key 后重试。',
+                model,
+                providerError: data,
+                expectedDimensions: EXPECTED_EMBEDDING_DIMENSIONS,
+              };
+              break; // 换模型
+            }
+            // 其他错误，记录后继续
+            lastError = data || { status: resp.status };
+            continue;
+          }
+
+          // 提取 embedding 数组
+          const embedding = data?.data?.[0]?.embedding;
+          if (!Array.isArray(embedding)) {
+            lastError = { error: 'Invalid response format', raw: data };
+            continue;
+          }
+
+          if (embedding.length !== EXPECTED_EMBEDDING_DIMENSIONS) {
+            lastError = {
+              error: 'EmbeddingDimensionMismatch',
+              message: `embedding 维度不匹配：当前数据库需要 ${EXPECTED_EMBEDDING_DIMENSIONS} 维向量。`,
+              model,
+              expected: EXPECTED_EMBEDDING_DIMENSIONS,
+              actual: embedding.length,
+            };
+            break; // 换 URL/模型, 不重试同一端点(结果必然相同)
+          }
+
+          return { embedding, model };
+        } catch (e: unknown) {
+          lastError = { error: e instanceof Error ? e.message : String(e) };
+          if (attempt < MAX_ATTEMPTS) {
+            await sleep(2000 * 2 ** (attempt - 1));
+            continue;
+          }
+          break;
+        }
       }
     }
   }
 
   const lastErrorText = JSON.stringify(lastError);
-  const errorPrefix = lastError?.error === 'EmbeddingModelNotAllowed'
-    ? 'EmbeddingModelNotAllowed'
-    : lastError?.error === 'EmbeddingDimensionMismatch'
-      ? 'EmbeddingDimensionMismatch'
-      : 'EmbeddingGenerationFailed';
+  let errorPrefix: string = 'EmbeddingGenerationFailed';
+  if (lastError && typeof lastError === 'object' && 'error' in lastError) {
+    if (lastError.error === 'EmbeddingModelNotAllowed') {
+      errorPrefix = 'EmbeddingModelNotAllowed';
+    } else if (lastError.error === 'EmbeddingDimensionMismatch') {
+      errorPrefix = 'EmbeddingDimensionMismatch';
+    }
+  }
 
   throw new Error(
     `${errorPrefix}: Embedding 生成失败。当前数据库需要 ${EXPECTED_EMBEDDING_DIMENSIONS} 维向量；请配置有 /embeddings 权限且输出 ${EXPECTED_EMBEDDING_DIMENSIONS} 维的模型/Key。尝试的模型: ${models.join(', ')}. 最后错误: ${lastErrorText}`,

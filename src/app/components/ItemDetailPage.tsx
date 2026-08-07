@@ -1,7 +1,8 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Pin, Trash2, FileText, Image as ImageIcon, Mic, File, Sparkles, Loader2, AlertTriangle, Pencil, Save, X } from 'lucide-react';
+import { ArrowLeft, Pin, Trash2, FileText, Image as ImageIcon, Mic, File, Sparkles, Loader2, AlertTriangle, Pencil, Save, X, Check } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
+import { retryCapturedItem } from '../../lib/process';
 
 interface ItemDetailPageProps {
   itemId: string;
@@ -19,6 +20,11 @@ interface ItemDetail {
   note: string | null;
   created_at: string;
   is_pinned: boolean;
+  /** O1 处理状态; 存量数据为 undefined */
+  processing_status?: string;
+  embedding_status?: string;
+  graph_status?: string;
+  processing_error?: string;
 }
 
 const typeIcons = {
@@ -60,6 +66,15 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
         .single();
 
       if (error) throw error;
+      // O1 自愈: 子步骤全部 completed 但主状态仍 processing(旧代码遗留)→ 推进为 completed
+      if (data && data.processing_status === 'processing' && data.graph_status === 'completed' && data.embedding_status === 'completed') {
+        supabase
+          .from('captured_info')
+          .update({ processing_status: 'completed' })
+          .eq('id', data.id)
+          .then(() => {});
+        data.processing_status = 'completed';
+      }
       setItem(data);
       setDraftTitle(data.title || '');
       setDraftNote(data.note || '');
@@ -68,6 +83,18 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleRetryProcessing = async () => {
+    if (!item) return;
+    // O1: 统一重试入口 — 分析失败先重跑提取, 再补做图谱/向量
+    try {
+      await retryCapturedItem(item.id);
+    } catch (e: unknown) {
+      console.error('处理失败:', e);
+      alert('处理失败，请稍后再试');
+    }
+    await fetchItemDetail();
   };
 
   const handleSaveEdit = async () => {
@@ -123,7 +150,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
     try {
       // 1. 如果是云端存储的文件，尝试从 Storage 删除 (可选，这里为简化主要删除数据库记录)
       if (item.content.startsWith('http')) {
-        const filePath = item.content.split('captured-files/')[1];
+        const filePath = item.content.split('captured-files/')[1]?.split('?')[0];
         if (filePath) {
           await supabase.storage.from('captured-files').remove([filePath]);
         }
@@ -236,7 +263,92 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
               <span className="text-xs text-gray-500">{typeLabels[item.type]}</span>
               <span className="text-xs text-gray-400 ml-auto">{new Date(item.created_at).toLocaleString()}</span>
             </div>
-            <h1 className="text-2xl font-bold text-gray-900 leading-tight">{item.title}</h1>
+            {(item.processing_status || item.graph_status || item.embedding_status) && (
+              <div className="mt-3 p-3 bg-gray-50 border border-gray-200 flex items-center gap-2 flex-wrap" style={{ borderRadius: '4px' }}>
+                {(() => {
+                  // O1: 聚合子状态判断整体; 任一子步骤失败即失败, 避免被部分成功掩盖
+                  const statuses = [item.graph_status, item.embedding_status].filter(Boolean);
+                  const anyFailed = item.processing_status === 'failed' || statuses.some((s) => s === 'failed');
+                  const anyProcessing =
+                    !anyFailed && (item.processing_status === 'processing' || statuses.some((s) => s === 'processing'));
+                  const allDone = !anyFailed && !anyProcessing && statuses.length > 0 && statuses.every((s) => s === 'completed');
+                  const graphActionable = !item.graph_status || item.graph_status === 'failed' || item.graph_status === 'pending';
+                  const embedActionable = !item.embedding_status || item.embedding_status === 'failed' || item.embedding_status === 'pending';
+                  const showAction =
+                    (anyFailed && (graphActionable || embedActionable)) ||
+                    (!anyFailed && !anyProcessing && !allDone) ||
+                    (anyProcessing && (graphActionable || embedActionable));
+                  if (anyFailed) {
+                    // 子步骤全 completed 但整体卡 failed(历史死锁行)→ 提供"恢复"入口
+                    const recoverOnly = !graphActionable && !embedActionable;
+                    return (
+                      <>
+                        <AlertTriangle className="w-4 h-4 text-red-500" />
+                        <span className="text-xs text-red-700">处理失败</span>
+                        {item.processing_error && (
+                          <span className="text-[11px] text-red-500 break-all flex-1 min-w-0">{item.processing_error}</span>
+                        )}
+                        {showAction && (
+                          <button
+                            onClick={handleRetryProcessing}
+                            className="flex-none px-2 py-1 bg-red-600 text-white text-xs hover:bg-red-700 transition-colors"
+                            style={{ borderRadius: '4px' }}
+                          >
+                            重试
+                          </button>
+                        )}
+                        {!showAction && recoverOnly && (
+                          <button
+                            onClick={handleRetryProcessing}
+                            className="flex-none px-2 py-1 bg-amber-600 text-white text-xs hover:bg-amber-700 transition-colors"
+                            style={{ borderRadius: '4px' }}
+                          >
+                            恢复
+                          </button>
+                        )}
+                      </>
+                    );
+                  }
+                  if (anyProcessing) {
+                    return (
+                      <>
+                        <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
+                        <span className="text-xs text-blue-700">处理中</span>
+                        {showAction && (
+                          <button
+                            onClick={handleRetryProcessing}
+                            className="flex-none px-2 py-1 bg-blue-600 text-white text-xs hover:bg-blue-700 transition-colors"
+                            style={{ borderRadius: '4px' }}
+                          >
+                            补做
+                          </button>
+                        )}
+                      </>
+                    );
+                  }
+                  if (allDone) {
+                    return (
+                      <>
+                        <Check className="w-4 h-4 text-green-600" />
+                        <span className="text-xs text-green-700">已完成</span>
+                      </>
+                    );
+                  }
+                  return (
+                    <>
+                      <span className="text-xs text-gray-500">待处理</span>
+                      <button
+                        onClick={handleRetryProcessing}
+                        className="flex-none px-2 py-1 bg-gray-600 text-white text-xs hover:bg-gray-700 transition-colors"
+                        style={{ borderRadius: '4px' }}
+                      >
+                        处理
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
 
           {/* 媒体预览 */}

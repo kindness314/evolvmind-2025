@@ -1,6 +1,19 @@
 import { generateEmbeddingForKnowledgeNode } from './graphSearch';
 import { supabase } from './supabase';
 
+const FETCH_TIMEOUT_MS = 60_000;
+
+/** fetch 带超时: API/LLM 挂起时抛错, 由调用方落 failed, 避免永久卡在 processing */
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type GraphNodeKind =
   | 'person'
   | 'event'
@@ -55,6 +68,62 @@ function safeJsonParse(text: string): any {
   } catch {
     return null;
   }
+}
+
+/**
+ * 修复 LLM 输出 JSON 中字符串值里未转义的 ASCII 引号
+ * （例如 MiniMax 常输出 "由"处理中"切换" 这类内嵌引号，会导致 JSON.parse 失败）。
+ * 仅在结构上下文之外的裸引号才转义，合法 JSON 不受影响。
+ */
+function repairUnescapedQuotes(text: string): string {
+  const s = (text || '').trim();
+  if (!s) return s;
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        out += ch;
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        let j = i + 1;
+        while (j < s.length && /\s/.test(s[j])) j++;
+        const next = j >= s.length ? undefined : s[j];
+        if (next === ',' || next === '}' || next === ']' || next === ':' || next === undefined) {
+          out += ch;
+          inString = false;
+        } else {
+          out += '\\"';
+        }
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+    if (ch === '"') {
+      let k = i - 1;
+      while (k >= 0 && /\s/.test(s[k])) k--;
+      const prev = k < 0 ? undefined : s[k];
+      if (prev === ':' || prev === ',' || prev === '[' || prev === '{' || prev === undefined) {
+        out += ch;
+        inString = true;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 function extractJsonObjects(text: string): string[] {
@@ -114,6 +183,10 @@ function normalizeContentToJson(text: string): any {
   const direct = safeJsonParse(withoutFence);
   if (direct) return direct;
 
+
+  const repaired = safeJsonParse(repairUnescapedQuotes(withoutFence));
+  if (repaired) return repaired;
+
   const all = extractJsonObjects(withoutFence);
   if (all.length > 0) {
     for (let idx = all.length - 1; idx >= 0; idx--) {
@@ -134,7 +207,7 @@ function normalizeName(input: string): string {
     .trim();
 }
 
-function stringifyError(err: any): string {
+export function stringifyError(err: any): string {
   if (!err) return '';
   if (typeof err === 'string') return err;
   if (err instanceof Error) return err.message;
@@ -167,9 +240,8 @@ export async function checkGraphSetup(): Promise<GraphSetupStatus> {
     status.schemaOk = false;
     status.schemaError = status.schemaError || stringifyError(linksResp.error);
   }
-
   try {
-    const r = await fetch('/api/graph/extract', { method: 'GET' });
+    const r = await fetchWithTimeout('/api/graph/extract', { method: 'GET' });
     if (!r.ok) {
       status.llmOk = false;
       status.llmError = `GET /api/graph/extract ${r.status}`;
@@ -283,7 +355,7 @@ function kindVal(kind: string): number {
 }
 
 async function extractGraphViaServer(content: string): Promise<ExtractedGraph> {
-  const resp = await fetch('/api/graph/extract', {
+  const resp = await fetchWithTimeout('/api/graph/extract', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -321,7 +393,14 @@ type DbLink = {
   evidence_captured_ids?: string[];
 };
 
-export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capturedId?: string }) {
+export interface GraphBuildResult {
+  nodesProcessed: number;
+  linksProcessed: number;
+  linksInserted: number;
+  linksUpdated: number;
+}
+
+export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capturedId?: string }): Promise<GraphBuildResult> {
   const capturedId = params.capturedId;
   const currentUser = (await supabase.auth.getUser()).data.user;
   const scopeId = currentUser?.id || '00000000-0000-0000-0000-000000000000';
@@ -480,8 +559,58 @@ export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capt
   };
 }
 
-export async function buildKnowledgeGraphFromContent(params: { content: string; capturedId?: string }) {
+export async function buildKnowledgeGraphFromContent(params: { content: string; capturedId?: string }): Promise<GraphBuildResult> {
   const graph = await extractGraph(params.content);
   return applyGraphToSupabase({ graph, capturedId: params.capturedId });
 }
 
+
+/**
+ * O1: 重试单条捕获记录的图谱构建
+ * 先落库 processing, 成功后 completed, 失败 failed + processing_error
+ * 供 HomePage / ItemDetailPage 的失败重试按钮使用
+ */
+export async function retryGraphForCaptured(capturedId: string): Promise<GraphBuildResult> {
+  const { data: row, error: rowError } = await supabase
+    .from('captured_info')
+    .select('title, summary, content, tags')
+    .eq('id', capturedId)
+    .single();
+  if (rowError) throw rowError;
+
+  const setup = await checkGraphSetup();
+  if (!setup.schemaOk) {
+    throw new Error(setup.schemaError?.toLowerCase().includes('invalid api key') ? 'Supabase 连接配置错误' : '数据库未应用图谱迁移');
+  }
+  if (!setup.llmOk) {
+    throw new Error('LLM 未配置');
+  }
+
+  await supabase.from('captured_info').update({ graph_status: 'processing', processing_status: 'processing', processed_at: new Date().toISOString() }).eq('id', capturedId);
+
+  try {
+    const contentForGraph = `标题: ${row.title || ''}\n摘要: ${row.summary || ''}\n关键词: ${(row.tags || []).join(', ')}\n资源: ${row.content || ''}`;
+    const result = await buildKnowledgeGraphFromContent({ content: contentForGraph, capturedId });
+    // O1: 成功只更新 graph_status; 若 embedding 也已 completed 则整体完成,
+    // 避免 processing_status 永远停在 'processing'
+    const { data: cur } = await supabase
+      .from('captured_info')
+      .select('embedding_status, processing_status')
+      .eq('id', capturedId)
+      .single();
+    const patch: Record<string, unknown> = { graph_status: 'completed', processed_at: new Date().toISOString() };
+    // 子步骤全 completed 即推进整体, 不因 processing_status 曾是 failed 而卡死(否则 UI 红徽章无按钮)
+    if (cur && cur.embedding_status === 'completed') {
+      patch.processing_status = 'completed';
+    }
+    await supabase.from('captured_info').update(patch).eq('id', capturedId);
+    return result;
+  } catch (e: unknown) {
+    const msg = stringifyError(e);
+    await supabase
+      .from('captured_info')
+      .update({ graph_status: 'failed', processing_status: 'failed', processing_error: `graph: ${msg.slice(0, 500)}` })
+      .eq('id', capturedId);
+    throw e;
+  }
+}
