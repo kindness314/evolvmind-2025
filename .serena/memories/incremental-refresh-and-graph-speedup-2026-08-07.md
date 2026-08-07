@@ -9,7 +9,7 @@
 - **DataPage 慢**：30s 轮询与重试收敛每次都 `captured_info.select('*')` 全量拉取。
 - **KnowledgePage 慢**：`select('*')` 拉 `knowledge_nodes` 时把 1536 维 `embedding` 向量列也序列化进 JSON（每节点十几 KB，30 节点即数百 KB）。`graph.ts` 等其他调用均只选具体列，`match_knowledge_nodes` RPC 输出也刻意排除 embedding，唯独 KnowledgePage 用 `*`。
 
-## 改动（working tree 未 commit）
+## 改动（已随 210e785 提交）
 ### DataPage.tsx — 增量同步（方案 B，免 DB migration）
 - 模块级 helper：`reconcileStatuses`（状态修复，全量/增量共用）、`formatInfoRow`（行→卡片映射共用）、`maxCreatedAt`、`mergeByKey`（按 id 合并 + 置顶优先/时间倒序）。
 - `InfoCard` 新增 `created_at_raw?: string`（原始 ISO，供增量合并排序；`toLocaleString` 的 `timestamp` 字典序对多位数日期不可靠）。
@@ -38,4 +38,4 @@
 ## 未做/取舍
 - 未加 `updated_at` 列 migration（方案 A）：需 `supabase db push`，且捕获删除/置顶当前由 3min 全量对账兜底，够用；后续如需秒级删除感知再上 migration。
 - 首页 AI 摘要/推荐为服务端聚合，不在增量刷新范围。
-- working tree 改动未 commit；已 commit 代码（`a2b4864` 及之前）已推送 origin + vercel（2026-08-07）。
+- 上述改动已随提交 `210e785`（feat: O1 处理状态系统 + 增量刷新 + UI 改进 + storage 删除路径修复）入库，并推送 vercel（`ab42547`）+ origin（`d93437b`），Vercel Production 已部署。

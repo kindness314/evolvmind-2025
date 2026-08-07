@@ -3,7 +3,7 @@
   "name": "user-scope-upload-security",
   "title": "用户范围与上传安全闭环",
   "description": "收口真实认证、请求范围、RLS/Storage 隔离、推荐 API 字段与上传边界校验",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "laifu",
   "assignee": "laifu",
   "createdAt": "2026-07-13",
-  "completedAt": null,
+  "completedAt": "2026-07-25",
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
@@ -21,5 +21,5 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "2026-07-22：生产安全迁移、匿名/Demo Storage 烟测和本地 Email OTP 单账户烟测已完成；163 Custom SMTP 发信和账户 A 真实邮箱登录 PASS。LoginPage OTP stale-state 缺陷与 429 限流提示已修复，typecheck/build PASS。A/B 数据、搜索、推荐、图谱、Storage、伪造 scope、未认证 API 与上传边界仍未执行；明日从 email-otp-ab-verification.md A1 保存账户 A 文本/文件开始。Twilio 中国手机号方向仍 BLOCKED；任务保持 in_progress。"
+  "notes": "2026-07-25：Email OTP 真实 A/B 隔离验收 13/13 PASS（提交 2fa3a2b），api/_lib/requestScope.ts 按 Bearer token 解析 scope 修复（提交 a2b4864）。手机号方向仍 BLOCKED（Twilio Trial + 中国短信），按 Email/Phone 分开记录。任务关闭。"
 }

@@ -48,4 +48,4 @@ App.tsx 用 `activeTab` 状态条件渲染页面 → 每次切 tab 页面组件 
 - **问题 2（补做按钮 + 状态刷新）**：`ProcessingBadge.showAction` 与 `isActionable` 移除 `anyProcessing && (graphActionable || embedActionable)` 分支 → 处理中不再显示"补做"、一键处理不再计入处理中项；`handleRetry`/`handleRetryAll` 开始即乐观置为"处理中"（本地 setData，含子状态清错），失败用 `toast.error` 替代 `alert`，`finally` 中 `fetchData()` 收敛刷新。
 - **问题 3（切 tab 重载）**：App.tsx 由 AnimatePresence 卸载/挂载改为 keep-alive——`visitedPages` 记录已访问页面（初始 `{'home'}`），首次访问挂载后常驻，切换仅 opacity 淡入 + `visibility:hidden`，不再重新请求；DataPage 30s 轮询继续保证新鲜度；HomePage 新增 `active` prop，从其他页切回时静默刷新推荐/总结（不闪 loading）。滑动动画降级为淡入。
 - **验证**：typecheck ✓ / build ✓（chunk 警告为非失败项）/ git diff --check ✓；浏览器 demo 模式烟测——首页字号实测（rec title 14px、reason 12px、summary header 16px、统计/章节标题 14px）✓；数据页切回首页 300ms 内直接显示旧内容、无 loading 闪烁 ✓；无 console 报错 ✓。
-- working tree 改动未 commit；已 commit 代码（`a2b4864` 及之前）已推送 origin + vercel（2026-08-07）。
+- 上述改动已随提交 `210e785` 入库并推送双远程（vercel `ab42547` / origin `d93437b`），Vercel Production 已部署。

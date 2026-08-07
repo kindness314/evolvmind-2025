@@ -37,3 +37,9 @@ dev-debug.log
 
 # pnpm
 pnpm-lock.yaml
+
+# Local tool caches (AI harness / codegraph / taskmaster)
+.agent/
+.codegraph/
+.omp/
+.taskmaster/
