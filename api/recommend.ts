@@ -95,7 +95,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const nodesScopeFilter = requestScope.isDemo
       ? 'user_id=is.null'
       : `user_id=eq.${encodeURIComponent(scopeId)}`;
-    const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids&${nodesScopeFilter}&order=created_at.desc&limit=500`;
+    const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids&${nodesScopeFilter}&limit=2000`;
     const nodesResp = await fetch(nodesUrl, { headers });
     if (!nodesResp.ok) {
       const detail = await nodesResp.text();
@@ -106,7 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const linksScopeFilter = requestScope.isDemo
       ? 'user_id=is.null'
       : `user_id=eq.${encodeURIComponent(scopeId)}`;
-    const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=source,target&${linksScopeFilter}&limit=500`;
+    const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=source,target&${linksScopeFilter}&limit=2000`;
     const linksResp = await fetch(linksUrl, { headers });
     if (!linksResp.ok) {
       const detail = await linksResp.text();
