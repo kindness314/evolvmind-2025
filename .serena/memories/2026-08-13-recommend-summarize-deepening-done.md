@@ -119,3 +119,23 @@
 
 
 harness 用法：`node scripts/eval-effectiveness.mjs --dataset deepening|life`
+
+## L3 叙事质量量化（LLM-as-judge，提交 41b2664）
+
+`api/judge.ts` 裁判端点 + `scripts/eval-narrative.mjs`：四维评分（忠实度/洞察/可执行/结构）+ 幻觉清单，裁判输入含系统统计数据（stats/trends/themeTrends）作为可信依据。
+
+**实测（修复前后）**：
+| | 7d | 30d |
+|---|---|---|
+| 修复前 | 6.8 分 / 4 幻觉 | 3.5 分 / 7 幻觉（含方法学误判） |
+| 修复后 | **8.0 / 0 幻觉** | **8.0 / 2 幻觉** |
+
+修复内容：
+1. 反编造规则提到 summarize prompt 顶部：只能原样引用上下文明文数字，禁止创造/改写/换算（编造的"32%/59%/飙升5倍"消失）
+2. 裁判输入补系统统计数据——30d 确定性叙事的数字（100条上限等）不再被误判为幻觉
+3. buildNarrative 触达 100 条查询上限时显示 "100+"（原"记录了 100 条"误导用户，实际窗口更多）
+
+残留（如实记录）：MiniMax 仍会改写因果链术语（"心神不宁/白天废"非原文）与使用过度断言（"完全消失"）——已由裁判标注，可人工抽查。
+
+回归门禁：综合 94%（89-99% 正常方差区间）。L1-L3 评估体系完成：
+`node scripts/eval-cluener.mjs`（外部实体）/ `eval-effectiveness.mjs --dataset deepening|life`（信号）/ `eval-narrative.mjs`（叙事质量）/ `demo-backup.mjs`（数据可恢复）
