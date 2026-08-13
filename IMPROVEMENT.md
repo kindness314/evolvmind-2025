@@ -18,6 +18,7 @@ O4 Settings 真实化               ⬜ 待执行
 O5 ProcessPage                   ⬜ 待执行
 O6 图谱聚焦缩放 + 懒加载         ⬜ 待执行
 O7 自动化测试                    ⬜ 待执行
+体验优化路线图 (P0-P7, 总结社区化/推送融合化/图谱规范化) ⬜ **当前第一优先** (2026-08-13, 详见 `.trellis/tasks/08-13-optimization-roadmap/plan.md`)
 ```
 
 手机号 OTP（Twilio）仍 BLOCKED（Trial + 中国短信），与 Email 验收分开记录，见 `.serena/memories/acceptance/`。
@@ -138,6 +139,7 @@ O7 自动化测试                    ⬜ 待执行
 | `.serena/memories/roadmap/dual-track-next-steps.md` | 后续路线与优先级（2026-08 已刷新） |
 | `.trellis/tasks/07-13-focus-zoom-pending/PENDING.md` | 图谱缩放四缺陷详情 |
 | `.trellis/tasks/07-13-app-deployment/TODO.md` | 发布待办历史记录（已并入本文档） |
+| `.trellis/tasks/08-13-optimization-roadmap/plan.md` | **当前第一优先**：体验优化路线图（P0-P7，2026-08-13） |
 | `.trellis/tasks/07-15-dual-track-roadmap/plan.md` | 历史执行计划（O 项字段/步骤细节参考） |
 | `.trellis/tasks/07-13-user-scope-upload-security/` | 安全隔离执行记录 |
 | `.serena/memories/acceptance/` | A/B 验收脚本与 Twilio 阻断记录 |

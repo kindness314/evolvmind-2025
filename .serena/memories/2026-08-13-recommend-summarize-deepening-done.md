@@ -47,7 +47,7 @@
 1. 英文术语节点抽取（NER/Supabase/Tailwind 等）被 MiniMax 模型丢弃——prompt 已尽力，需换模型或后处理
 2. 部分节点 embedding 因 qpm 限流失败（可 `node scripts/seed-test-data.mjs --dataset deepening --fill-embeds` 补）
 3. ~~30d 窗口 captured 查询 limit=50~~ → 已修复为 100（a5e6ce3）
-4. O6 图谱聚焦缩放 + 懒加载仍未做（下个官方优先项）
+4. **体验优化路线图已定为当前优先**（2026-08-13）：总结社区化(P2 GraphRAG 社区摘要)/推送融合化(P5 多信号+反馈)/图谱规范化(P0 schema)——见 `.trellis/tasks/08-13-optimization-roadmap/plan.md`；O6 图谱缩放+懒加载顺延为其后。
 
 ## 有效性评估（提交 a5e6ce3，综合 98%）
 
