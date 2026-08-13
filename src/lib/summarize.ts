@@ -10,6 +10,11 @@ export type SummaryPeriod = '7d' | '30d';
 export interface SummaryTheme {
   name: string;
   count: number;
+  /** LLM 对该主题的深度分析 */
+  insight?: string;
+  /** 主题趋势方向（本期 vs 上期） */
+  direction?: 'up' | 'down' | 'new' | 'stable';
+  detail?: string;
 }
 
 export interface ImportantNode {
@@ -22,6 +27,8 @@ export interface NewConnection {
   from: string;
   to: string;
   relationType: string;
+  /** 该关联对用户的意义 */
+  significance?: string;
 }
 
 export interface SummaryTrend {

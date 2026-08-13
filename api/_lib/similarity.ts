@@ -19,6 +19,7 @@ export interface CapturedForEmbedding {
   summary?: string;
   content?: string;
   tags?: string[];
+  created_at?: string;
 }
 
 export interface CapturedWithEmbedding extends CapturedForEmbedding {
@@ -55,39 +56,46 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 // ---------------------------------------------------------------------------
 
 /**
- * 为一组捕获批量生成 embedding（并行，带 8s 总超时）。
- * 超时或全部失败时返回空数组，调用方跳过语义规则。
+ * 为一组捕获批量生成 embedding。
+ * - 并发上限 4：避免 qpm 限流打爆全部请求
+ * - 总超时 30s：embedding 冷启动可到 20s+，8s 预算会让语义规则永远失效
+ * 超时或全部失败时返回空数组，调用方跳过语义规则（可选增强，不影响主流程）。
  */
 export async function batchEmbedCaptures(
   captures: CapturedForEmbedding[],
   apiKey: string,
 ): Promise<CapturedWithEmbedding[]> {
   if (captures.length === 0 || !apiKey) return [];
+  const CONCURRENCY = 4;
+  const results: Array<CapturedWithEmbedding | null> = new Array(captures.length).fill(null);
+  let cursor = 0;
 
-  const tasks = captures.map(async (cap) => {
-    const text = buildEmbeddingText({
-      title: cap.title,
-      summary: cap.summary,
-      content: cap.content,
-      tags: cap.tags,
-    });
-    if (!text.trim()) return null;
-
-    try {
-      const { embedding } = await generateEmbedding({
-        text,
-        apiKey,
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= captures.length) return;
+      const cap = captures[i];
+      const text = buildEmbeddingText({
+        title: cap.title,
+        summary: cap.summary,
+        content: cap.content,
+        tags: cap.tags,
       });
-      return { ...cap, embedding };
-    } catch {
-      return null;
+      if (!text.trim()) continue;
+      try {
+        const { embedding } = await generateEmbedding({ text, apiKey });
+        results[i] = { ...cap, embedding };
+      } catch {
+        results[i] = null;
+      }
     }
-  });
+  }
 
-  // 8s 总超时：embedding 可选增强，超时跳过语义规则
-  const timer: Promise<null> = new Promise((resolve) => setTimeout(() => resolve(null), 8000));
-  const results = await Promise.race([Promise.all(tasks), timer]);
-  if (results === null) return [];
+  const workers = Array.from({ length: Math.min(CONCURRENCY, captures.length) }, worker);
+  const { promise: timer, resolve: finish } = Promise.withResolvers<null>();
+  const timerId = setTimeout(finish, 30000);
+  await Promise.race([Promise.all(workers), timer]);
+  clearTimeout(timerId);
   return results.filter((r): r is CapturedWithEmbedding => r !== null);
 }
 

@@ -10,7 +10,7 @@
 
 import { supabase } from './supabase';
 
-export type RecommendationType = 'review' | 'related' | 'forming';
+export type RecommendationType = 'review' | 'semantic' | 'graph_bridge' | 'forming' | 'related';
 export type RecommendationTarget = 'captured' | 'node';
 
 export interface Recommendation {
@@ -26,6 +26,8 @@ export interface Recommendation {
   nodeId?: string;
   /** 可选：第二个目标（用于语义对/图桥推荐） */
   secondaryTargetId?: string;
+  /** 证据引用：推荐依据的具体捕获/节点 */
+  evidence?: Array<{ type: 'capture' | 'node'; id: string; title: string }>;
 }
 
 export interface RecommendResponse {

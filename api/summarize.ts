@@ -16,6 +16,7 @@
  */
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope, type RequestScope } from './_lib/requestScope.js';
+import { computeThemeDirections, splitByWindow, tagFrequency, type ThemeTrend } from './_lib/insights.js';
 import { isTrivialNodeName, isNoiseCapture } from './_lib/noise.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
@@ -130,9 +131,9 @@ interface AggregatedData {
   newNodeCount: number;
   newLinkCount: number;
   tagFreq: Map<string, number>;
-  capturedList: { title: string; summary: string; content: string; tags: string[]; createdAt: string }[];
+  capturedList: { id: string; title: string; summary: string; content: string; tags: string[]; createdAt: string; created_at: string }[];
   nodeList: { name: string; kind: string; createdAt: string; sourceCount: number }[];
-  linkList: { from: string; to: string; type: string }[];
+  linkList: { from: string; to: string; type: string; evidenceCount: number }[];
   /** 图中心度前5节点（按关联 capture 数） */
   centralNodes: { name: string; kind: string; connectCount: number }[];
   /** 代表性摘录 */
@@ -211,11 +212,13 @@ async function aggregateData(
     capturedList: captured
       .filter((c) => !isNoiseCapture(c.title, c.summary, c.content))
       .map((c) => ({
+        id: c.id,
         title: c.title,
         summary: c.summary,
         content: c.content,
         tags: c.tags,
         createdAt: c.created_at,
+        created_at: c.created_at,
       })),
     nodeList: nodes
       .filter((n) => !isTrivialNodeName(n.name))
@@ -229,14 +232,15 @@ async function aggregateData(
       .filter((l) => {
         const fromName = l.source_node?.name || '';
         const toName = l.target_node?.name || '';
-        // 排除两端都是噪声节点的 link（如 "午饭→红烧肉"）
-        if (isTrivialNodeName(fromName) && isTrivialNodeName(toName)) return false;
+        // 任一端是噪声节点即丢弃（如 "加班→1.5小时"、"第4章→注意力残余"）
+        if (isTrivialNodeName(fromName) || isTrivialNodeName(toName)) return false;
         return true;
       })
       .map((l) => ({
         from: l.source_node?.name || '未知',
         to: l.target_node?.name || '未知',
         type: l.relation_type,
+        evidenceCount: Array.isArray(l.evidence_captured_ids) ? l.evidence_captured_ids.length : 0,
       })),
     centralNodes,
     excerpts,
@@ -253,7 +257,58 @@ interface TrendItem {
   detail: string;
 }
 
-function detectTrends(current: AggregatedData, previous: AggregatedData): TrendItem[] {
+/**
+ * 主题方向（等长窗口才可比）：
+ *  - 7d: 本期 7 天 vs 上期 7 天（直接比次数）
+ *  - 30d: 近 7 天 vs 更早 23 天（按出现率归一化）
+ */
+function computeThemeDirectionsFor(
+  agg: AggregatedData,
+  prevAgg: AggregatedData,
+  period: string,
+): Map<string, ThemeTrend> {
+  let recentFreq: Map<string, number>;
+  let olderFreq: Map<string, number>;
+  let recentCount: number;
+  let olderCount: number;
+  let labelRecent: string;
+  let labelOlder: string;
+
+  if (period === '7d') {
+    recentFreq = agg.tagFreq;
+    olderFreq = prevAgg.tagFreq;
+    recentCount = agg.capturedCount;
+    olderCount = prevAgg.capturedCount;
+    labelRecent = '本期';
+    labelOlder = '上期';
+  } else {
+    const { recent, older } = splitByWindow(agg.capturedList, 7);
+    recentFreq = tagFrequency(recent);
+    olderFreq = tagFrequency(older);
+    recentCount = recent.length;
+    olderCount = older.length;
+    labelRecent = '近7天';
+    labelOlder = '更早';
+  }
+
+  const trends = computeThemeDirections(recentFreq, olderFreq, recentCount, olderCount, {
+    minTotal: period === '7d' ? 2 : 3,
+  });
+  return new Map(
+    trends
+      .filter((t) => !isTrivialNodeName(t.name))
+      .map((t) => [t.name, { ...t, detail: themeTrendDetailText(t, labelRecent, labelOlder) }]),
+  );
+}
+
+function themeTrendDetailText(t: ThemeTrend, labelRecent: string, labelOlder: string): string {
+  if (t.direction === 'new') return `${labelRecent}首次出现 ${t.recent} 次，是新的关注点`;
+  if (t.direction === 'up') return `${labelRecent} ${t.recent} 次 vs ${labelOlder} ${t.older} 次，正在升温`;
+  if (t.direction === 'down') return `${labelRecent} ${t.recent} 次 vs ${labelOlder} ${t.older} 次，热度在下降`;
+  return `${labelRecent} ${t.recent} 次 vs ${labelOlder} ${t.older} 次，保持平稳`;
+}
+
+function detectTrends(current: AggregatedData, previous: AggregatedData, period: string): TrendItem[] {
   const trends: TrendItem[] = [];
 
   // 捕获量变化
@@ -285,12 +340,19 @@ function detectTrends(current: AggregatedData, previous: AggregatedData): TrendI
     const pct = Math.round((linkDelta / previous.newLinkCount) * 100);
     if (pct >= 30) trends.push({ label: '知识连接', direction: 'up', detail: `知识节点间的连接增长 ${pct}%` });
   }
-
-  // 新兴标签
-  const currentTags = new Set(current.tagFreq.keys());
-  const newTags = [...currentTags].filter((t) => !previous.tagFreq.has(t));
-  if (newTags.length >= 2) {
-    trends.push({ label: '新关注点', direction: 'new', detail: `出现了新话题：${newTags.slice(0, 3).join('、')}` });
+  // 主题方向（等长窗口对比：7d=本期vs上期, 30d=近7天vs更早）
+  const themeTrends = [...computeThemeDirectionsFor(current, previous, period).values()];
+  const upThemes = themeTrends.filter((t) => t.direction === 'up').slice(0, 2);
+  const newThemes = themeTrends.filter((t) => t.direction === 'new').slice(0, 2);
+  const downThemes = themeTrends.filter((t) => t.direction === 'down').slice(0, 2);
+  if (upThemes.length > 0) {
+    trends.push({ label: '主题升温', direction: 'up', detail: `「${upThemes[0].name}」${upThemes[0].detail}${upThemes[1] ? `；「${upThemes[1].name}」也在上升` : ''}` });
+  }
+  if (newThemes.length > 0) {
+    trends.push({ label: '新主题', direction: 'new', detail: `新出现「${newThemes[0].name}」（${newThemes[0].recent} 次）${newThemes[1] ? `、「${newThemes[1].name}」` : ''}——你最近开始关注新的领域` });
+  }
+  if (downThemes.length > 0) {
+    trends.push({ label: '主题降温', direction: 'down', detail: `「${downThemes[0].name}」${downThemes[0].detail}` });
   }
 
   return trends.slice(0, 5);
@@ -357,12 +419,78 @@ async function fetchPreviousPeriod(
 // 确定性降级
 // ---------------------------------------------------------------------------
 
-function buildDeterministicResponse(agg: AggregatedData, period: string, trends: TrendItem[]) {
+/** 确定性叙事：LLM 不可用时也给出连贯、有洞察的叙述，而非数据罗列 */
+function buildNarrative(
+  agg: AggregatedData,
+  period: string,
+  themeDirections: Map<string, ThemeTrend>,
+): string {
+  const periodText = period === '7d' ? '这一周' : '这一个月';
+  if (agg.capturedCount === 0) {
+    return `${periodText}你还没有新的记录，图谱也没有新的变化。试着记录一件小事，系统才能帮你看见规律。`;
+  }
+
+  const parts: string[] = [];
+  parts.push(`${periodText}你记录了 ${agg.capturedCount} 条内容，知识图谱随之新增了 ${agg.newNodeCount} 个节点和 ${agg.newLinkCount} 条关联。`);
+
+  const sortedTags = [...agg.tagFreq.entries()].sort((a, b) => b[1] - a[1]);
+  if (sortedTags.length > 0) {
+    const top = sortedTags[0];
+    const rising = [...themeDirections.values()]
+      .filter((t) => (t.direction === 'up' || t.direction === 'new') && t.recent >= 2)
+      .sort((a, b) => b.recent - a.recent)
+      .slice(0, 1);
+    const falling = [...themeDirections.values()]
+      .filter((t) => t.direction === 'down')
+      .sort((a, b) => b.older - a.older)
+      .slice(0, 1);
+    const themeBits: string[] = [`最集中的主题是「${top[0]}」（${top[1]} 次）`];
+    if (rising.length > 0) {
+      themeBits.push(`「${rising[0].name}」${rising[0].detail}`);
+    }
+    if (falling.length > 0) {
+      themeBits.push(`而「${falling[0].name}」${falling[0].detail}`);
+    }
+    parts.push(themeBits.join('；') + '。');
+  }
+
+  if (agg.linkList.length > 0) {
+    const topLinks = agg.linkList.slice(0, 2);
+    const linkTexts = topLinks.map((l) => {
+      const support = l.evidenceCount > 1
+        ? `（${l.evidenceCount} 条记录共同支撑）`
+        : '';
+      return `「${l.from}」→「${l.to}」${support}`;
+    });
+    parts.push(`图谱里值得注意的新关联是 ${linkTexts.join('、')}${topLinks.length > 1 ? ' 等' : ''}——这些连接往往是跨领域规律的入口。`);
+  }
+
+  if (agg.centralNodes.length > 0) {
+    parts.push(`当前知识网络的核心是「${agg.centralNodes[0].name}」，它串起了 ${agg.centralNodes[0].connectCount} 条记录。`);
+  }
+
+  return parts.join(' ');
+}
+
+function buildDeterministicResponse(
+  agg: AggregatedData,
+  period: string,
+  trends: TrendItem[],
+  themeDirections: Map<string, ThemeTrend>,
+) {
   const sortedTags = [...agg.tagFreq.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
 
-  const themes = sortedTags.map(([name, count]) => ({ name, count }));
+  const themes = sortedTags.map(([name, count]) => {
+    const dir = themeDirections.get(name);
+    return {
+      name,
+      count,
+      direction: dir?.direction || 'stable',
+      detail: dir?.detail || '',
+    };
+  });
   const importantNodes = agg.centralNodes.map((n) => ({
     name: n.name,
     kind: n.kind,
@@ -373,6 +501,11 @@ function buildDeterministicResponse(agg: AggregatedData, period: string, trends:
     from: l.from,
     to: l.to,
     relationType: l.type,
+    significance: l.evidenceCount > 1
+      ? `由 ${l.evidenceCount} 条记录共同支撑，不是偶然出现的关联`
+      : l.evidenceCount === 1
+        ? '目前只由 1 条记录支撑，值得继续观察'
+        : '',
   }));
 
   const nextActions: string[] = [];
@@ -389,17 +522,28 @@ function buildDeterministicResponse(agg: AggregatedData, period: string, trends:
     nextActions.push(`${agg.capturedCount} 条新捕获都没有生成知识节点，检查图谱抽取是否正常，或手动为重要内容创建节点`);
   }
 
-  // 3. 形成中的主题（高频标签）
-  const formingTags = [...agg.tagFreq.entries()]
-    .filter(([, count]) => count >= 3)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3);
-  if (formingTags.length > 0) {
-    const tagNames = formingTags.map(([name]) => `「${name}」`).join('、');
-    nextActions.push(`高频标签 ${tagNames} 正在形成主题，把这些相关捕获连接起来可以帮你发现更深层的模式`);
+  // 3. 升温/新生主题——当前生活的重心，给出具体动作
+  const risingThemes = [...themeDirections.values()]
+    .filter((t) => (t.direction === 'up' || t.direction === 'new') && t.recent >= 2)
+    .sort((a, b) => b.recent - a.recent)
+    .slice(0, 2);
+  for (const t of risingThemes) {
+    nextActions.push(
+      t.direction === 'new'
+        ? `「${t.name}」是最近新出现的主题（${t.recent} 次）——花 10 分钟回顾这几条记录，给它们补上标签并连接相关节点，让这个新领域成型`
+        : `「${t.name}」在升温（本期 ${t.recent} 次 vs 上期 ${t.older} 次），它很可能是你当前生活的重心——把相关记录串成一条线索，找出背后的原因`,
+    );
   }
 
-  // 4. 核心节点——给出具体探索方向
+  // 4. 降温主题——可能是想放弃或已告一段落的事
+  const fallingTheme = [...themeDirections.values()]
+    .filter((t) => t.direction === 'down')
+    .sort((a, b) => b.older - a.older)[0];
+  if (fallingTheme) {
+    nextActions.push(`「${fallingTheme.name}」的热度在下降（本期 ${fallingTheme.recent} 次 vs 上期 ${fallingTheme.older} 次）——如果是你想坚持的事，记一条"为什么中断"，往往比强迫自己继续更有效`);
+  }
+
+  // 5. 核心节点——给出具体探索方向
   if (agg.centralNodes.length > 0) {
     const top = agg.centralNodes[0];
     const topTags = [...agg.tagFreq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
@@ -410,19 +554,16 @@ function buildDeterministicResponse(agg: AggregatedData, period: string, trends:
     }
   }
 
-  // 5. 趋势驱动的行动
+  // 6. 捕获量趋势驱动的行动
   const growthTrend = trends.find((t) => t.direction === 'up' && t.detail.includes('增长'));
   if (growthTrend) {
     nextActions.push(`记录量在上升，趁热打铁：本周每天固定时段捕获，养成习惯后你会看到更清晰的趋势`);
-  }
-  const newTopicTrend = trends.find((t) => t.direction === 'new' && t.detail.includes('新话题'));
-  if (newTopicTrend) {
-    nextActions.push(`出现了新话题，花 10 分钟回顾这些新内容，给它们打上标签，让后续分析更精准`);
   }
 
   return {
     ok: true,
     period,
+    narrative: buildNarrative(agg, period, themeDirections),
     themes,
     importantNodes,
     newConnections,
@@ -586,11 +727,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 趋势检测：查询上一周期做对比
     const prevAgg = await fetchPreviousPeriod(requestScope, since, queryToken);
-    const trends = detectTrends(agg, prevAgg);
+    const trends = detectTrends(agg, prevAgg, period);
+    // 主题方向：等长窗口对比（7d=本期vs上期, 30d=近7天vs更早）
+    const themeDirections = computeThemeDirectionsFor(agg, prevAgg, period);
 
     // 无数据
     if (agg.capturedCount === 0 && agg.newNodeCount === 0) {
-      const empty = buildDeterministicResponse(agg, period, trends);
+      const empty = buildDeterministicResponse(agg, period, trends, themeDirections);
       res.status(200).json(empty);
       return;
     }
@@ -598,7 +741,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 尝试 LLM
     const apiKey = process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
     if (!apiKey) {
-      const fallback = buildDeterministicResponse(agg, period, trends);
+      const fallback = buildDeterministicResponse(agg, period, trends, themeDirections);
       fallback.nextActions.push('LLM 不可用，当前为统计摘要');
       res.status(200).json(fallback);
       return;
@@ -643,10 +786,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const narrative = typeof parsed.narrative === 'string' ? parsed.narrative : undefined;
 
         const themes = Array.isArray(parsed.themes)
-          ? (parsed.themes as Record<string, unknown>[]).map((t) => ({
-              name: typeof t.name === 'string' ? t.name : '',
-              count: typeof t.count === 'number' ? t.count : 0,
-            }))
+          ? (parsed.themes as Record<string, unknown>[]).map((t) => {
+              const name = typeof t.name === 'string' ? t.name : '';
+              // 方向匹配：LLM 主题名可能包装了标签（"加班的系统性归因"→"加班"）
+              let dir = themeDirections.get(name);
+              if (!dir) {
+                let bestLen = 0;
+                for (const [tag, trend] of themeDirections) {
+                  if ((name.includes(tag) || tag.includes(name)) && tag.length > bestLen) {
+                    dir = trend;
+                    bestLen = tag.length;
+                  }
+                }
+              }
+              return {
+                name,
+                count: typeof t.count === 'number' ? t.count : 0,
+                insight: typeof t.insight === 'string' ? t.insight : '',
+                direction: dir?.direction || 'stable',
+                detail: dir?.detail || '',
+              };
+            })
           : [];
 
         const importantNodes = Array.isArray(parsed.importantNodes)
@@ -662,6 +822,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               from: typeof c.from === 'string' ? c.from : '',
               to: typeof c.to === 'string' ? c.to : '',
               relationType: typeof c.relationType === 'string' ? c.relationType : '相关',
+              significance: typeof c.significance === 'string' ? c.significance : '',
             }))
           : [];
 
@@ -672,7 +833,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         res.status(200).json({
           ok: true,
           period,
-          narrative,
+          narrative: narrative || buildNarrative(agg, period, themeDirections),
           themes: themes.slice(0, 5),
           importantNodes: importantNodes.slice(0, 5),
           newConnections: newConnections.slice(0, 5),
@@ -690,7 +851,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // LLM 全部失败 → 确定性降级
-    const fallback = buildDeterministicResponse(agg, period, trends);
+    const fallback = buildDeterministicResponse(agg, period, trends, themeDirections);
     res.status(200).json(fallback);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';

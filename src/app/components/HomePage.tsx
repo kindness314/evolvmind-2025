@@ -157,6 +157,22 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                                       <p className="text-xs text-blue-600 leading-relaxed">{rec.action}</p>
                                     </div>
                                   )}
+                                  {rec.evidence && rec.evidence.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-1.5">
+                                      {rec.evidence.map((ev) => (
+                                        <span
+                                          key={`${ev.type}-${ev.id}`}
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-50 border border-gray-100 text-[11px] text-gray-500 max-w-full"
+                                          style={{ borderRadius: '3px' }}
+                                        >
+                                          {ev.type === 'node'
+                                            ? <Tag className="w-2.5 h-2.5 flex-none" />
+                                            : <span className="w-1.5 h-1.5 rounded-full bg-gray-300 flex-none" />}
+                                          <span className="truncate">{ev.title}</span>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                                 <button
                                   onClick={(e) => {
@@ -222,15 +238,19 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                 <span><span className="font-medium text-gray-700">{summary.stats.newLinkCount}</span> 个关系</span>
               </div>
 
-              {/* Narrative（LLM 叙事式总结） */}
+              {/* Narrative（叙事式总结） */}
               {summary.narrative && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  className="bg-white border border-blue-100 px-3 py-2.5"
-                  style={{ borderRadius: '4px' }}
+                  className="border border-blue-100 overflow-hidden"
+                  style={{ borderRadius: '4px', background: 'linear-gradient(135deg, #eff6ff 0%, #ffffff 55%)' }}
                 >
-                  <p className="text-sm text-gray-700 leading-relaxed">{summary.narrative}</p>
+                  <h4 className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50/60 border-b border-blue-100 flex items-center gap-1.5">
+                    <CalendarRange className="w-3 h-3" />
+                    这段时间你在忙什么
+                  </h4>
+                  <p className="px-3 py-2.5 text-sm text-gray-700 leading-relaxed">{summary.narrative}</p>
                 </motion.div>
               )}
 
@@ -264,16 +284,25 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                     {summary.themes.map((t, i) => {
                       const maxCount = Math.max(...summary.themes.map((x) => x.count), 1);
                       const barWidth = Math.round((t.count / maxCount) * 100);
+                      const tMeta = trendMeta[t.direction || 'stable'] || trendMeta.stable;
                       return (
-                        <div key={i} className="flex items-center gap-2">
-                          <span className="text-sm text-gray-700 w-20 truncate flex-none">{t.name}</span>
-                          <div className="flex-1 h-2 bg-gray-100 overflow-hidden" style={{ borderRadius: '2px' }}>
-                            <div
-                              className="h-full bg-blue-400 transition-all"
-                              style={{ width: `${barWidth}%`, borderRadius: '2px' }}
-                            />
+                        <div key={i} className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-gray-700 w-20 truncate flex-none">{t.name}</span>
+                            <div className="flex-1 h-2 bg-gray-100 overflow-hidden" style={{ borderRadius: '2px' }}>
+                              <div
+                                className="h-full bg-blue-400 transition-all"
+                                style={{ width: `${barWidth}%`, borderRadius: '2px' }}
+                              />
+                            </div>
+                            <span className="text-xs text-gray-400 w-6 text-right flex-none">{t.count}</span>
+                            {t.direction && t.direction !== 'stable' && (
+                              <span className={`flex-none ${tMeta.color}`}>{tMeta.icon}</span>
+                            )}
                           </div>
-                          <span className="text-xs text-gray-400 w-6 text-right flex-none">{t.count}</span>
+                          {t.insight && (
+                            <p className="text-xs text-gray-500 leading-relaxed">{t.insight}</p>
+                          )}
                         </div>
                       );
                     })}
@@ -330,11 +359,19 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                   </h4>
                   <div className="px-3 py-1.5 space-y-0.5">
                     {summary.newConnections.map((c, i) => (
-                      <div key={i} className="flex items-center gap-1 text-xs text-gray-500">
-                        <span className="text-gray-700">{c.from}</span>
-                        <span className="text-gray-300">→</span>
-                        <span className="text-gray-700">{c.to}</span>
-                        <span className="text-gray-400 ml-1">({c.relationType})</span>
+                      <div key={i} className="py-1">
+                        <div className="flex items-center gap-1 text-xs text-gray-500">
+                          <span className="text-gray-700">{c.from}</span>
+                          <span className="text-gray-300">→</span>
+                          <span className="text-gray-700">{c.to}</span>
+                          <span className="text-gray-400 ml-1">({c.relationType})</span>
+                        </div>
+                        {c.significance && (
+                          <p className="text-[11px] text-gray-400 mt-0.5 flex items-start gap-1">
+                            <Lightbulb className="w-2.5 h-2.5 text-amber-400 mt-0.5 flex-none" />
+                            {c.significance}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -353,8 +390,10 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                   </h4>
                   <div className="px-3 py-2 space-y-1.5">
                     {summary.nextActions.map((a, i) => (
-                      <div key={i} className="flex items-start gap-1.5">
-                        <span className="text-blue-400 text-xs mt-0.5">•</span>
+                      <div key={i} className="flex items-start gap-2">
+                        <span className="flex-none w-4 h-4 rounded-full bg-blue-500 text-white text-[11px] flex items-center justify-center mt-0.5">
+                          {i + 1}
+                        </span>
                         <span className="text-sm text-blue-800 leading-relaxed">{a}</span>
                       </div>
                     ))}
