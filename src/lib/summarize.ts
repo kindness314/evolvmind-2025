@@ -24,20 +24,32 @@ export interface NewConnection {
   relationType: string;
 }
 
+export interface SummaryTrend {
+  label: string;
+  direction: 'up' | 'down' | 'new' | 'stable';
+  detail: string;
+}
+
 export interface SummaryResponse {
   ok: boolean;
   period: SummaryPeriod;
+  /** 叙事式总结（LLM 生成时提供） */
+  narrative?: string;
   themes: SummaryTheme[];
   importantNodes: ImportantNode[];
   newConnections: NewConnection[];
   nextActions: string[];
+  /** 变化趋势（对比上一周期） */
+  trends: SummaryTrend[];
+  /** 代表性原文摘录 */
+  highlights: string[];
   /** 摘要总数统计 */
   stats: {
     capturedCount: number;
     newNodeCount: number;
     newLinkCount: number;
   };
-  /** LLM 解析失败时保留原始统计，不丢失信息 */
+  /** LLM 解析失败时保留原始统计 */
   raw?: {
     themes: SummaryTheme[];
     importantNodes: ImportantNode[];
@@ -81,6 +93,8 @@ export async function fetchSummary(params: {
         importantNodes: [],
         newConnections: [],
         nextActions: [],
+        trends: [],
+        highlights: [],
         stats: { capturedCount: 0, newNodeCount: 0, newLinkCount: 0 },
         error: `HTTP ${resp.status}`,
         detail: errText,
@@ -98,6 +112,8 @@ export async function fetchSummary(params: {
       importantNodes: [],
       newConnections: [],
       nextActions: [],
+      trends: [],
+      highlights: [],
       stats: { capturedCount: 0, newNodeCount: 0, newLinkCount: 0 },
       error: 'Network error',
       detail: message,

@@ -18,10 +18,14 @@ export interface Recommendation {
   type: RecommendationType;
   title: string;
   reason: string;
+  /** 可执行建议（如"建议回顾这两条内容并建立联系"） */
+  action: string;
   targetType: RecommendationTarget;
   targetId: string;
   /** 可选：关联节点 ID，用于图谱聚焦 */
   nodeId?: string;
+  /** 可选：第二个目标（用于语义对/图桥推荐） */
+  secondaryTargetId?: string;
 }
 
 export interface RecommendResponse {

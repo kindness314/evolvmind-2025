@@ -237,6 +237,8 @@ function normalizeLinkType(t: any): GraphLinkType {
   return 'related_to';
 }
 
+import { isTrivialNodeName } from '../_lib/noise.js';
+
 function normalizeGraph(obj: any): ExtractedGraph {
   const nodesRaw = Array.isArray(obj?.nodes) ? obj.nodes : [];
   const linksRaw = Array.isArray(obj?.links) ? obj.links : [];
@@ -256,6 +258,7 @@ function normalizeGraph(obj: any): ExtractedGraph {
       };
     })
     .filter((n: ExtractedGraphNode) => n.name.length > 0)
+    .filter((n: ExtractedGraphNode) => !isTrivialNodeName(n.name))
     .slice(0, 50);
 
   const nodeIds = new Set(nodes.map((n) => n.id));
@@ -319,7 +322,29 @@ async function callChatCompletion(params: { url: string; apiKey: string; model: 
             {
               role: 'system',
               content:
-                '你是一个知识图谱抽取助手。你必须只返回严格 JSON，不要输出 Markdown/解释。目标：从输入内容抽取“人/事/物/概念/观点/结论/待办/疑问/时间/地点”并建立关系。输出格式必须为：{"nodes":[{"id":"n1","name":"...","kind":"person|event|object|concept|view|conclusion|todo|question|time|location","aliases":["..."],"confidence":0.0}],"links":[{"source":"n1","target":"n2","type":"causes|part_of|supports|happens_at|located_in|related_to","evidence":"输入中的原句片段","confidence":0.0}]}. 规则：1) 同一概念在本段内容内合并为一个 node，并把同义词/别名放入 aliases；2) nodes<=25 links<=40；3) evidence 尽量取原文短句；4) confidence 0-1；5) 如果不确定，type 用 related_to，kind 用 concept。',
+                '你是知识图谱抽取助手。只返回严格 JSON，不要 Markdown/解释。\n' +
+                '目标：从输入内容抽取有意义的节点和关系。\n' +
+                '\n' +
+                '【节点抽取规则】\n' +
+                '只抽取能跨多条记录帮助发现规律的有意义节点：\n' +
+                '- person: 具体的人名或角色（如"张三""产品经理"），不要"我""他""某人"\n' +
+                '- event: 具体的事件（如"季度复盘会""搬家"），不要"吃饭""睡觉"这类日常\n' +
+                '- object: 具体的物品或工具（如"Obsidian""跑步机"），不要"手机""电脑"这类泛称\n' +
+                '- concept: 有意义的概念或方法论（如"番茄工作法""认知负荷"），不要"事情""问题"\n' +
+                '- view: 个人观点或判断（如"加班是时间错觉""睡眠比运动重要"），不要"我觉得""还行"\n' +
+                '- conclusion: 明确的结论或决定（如"决定使用Vercel部署"），不要"再说""看看吧"\n' +
+                '- todo: 明确的待办事项（如"周五前提交报告"），不要模糊的"要做某事"\n' +
+                '- question: 值得深究的问题（如"为什么深度工作总是被打断？"），不要"Yes/No问题"\n' +
+                '- location: 仅提取有辨识度的具体地点（如"北京""星巴克中关村店""西湖"），不要"家里""公司""食堂""那边"\n' +
+                '- time: 仅提取具体的日期、周期或时间节点（如"2026年春节""每周五""8月10日"），不要"今天""明天""下午""早上""晚上""上周"\n' +
+                '\n' +
+                '【过滤准则】\n' +
+                '对每个候选节点问自己：如果这个节点出现在 10 条不同的捕获中，它能帮助发现跨领域的规律吗？不能 → 不提取。\n' +
+                '通用时间状语、泛称地点、问候语、无信息量记录都不要提取。\n' +
+                '\n' +
+                '【输出格式】\n' +
+                '{"nodes":[{"id":"n1","name":"...","kind":"person|event|object|concept|view|conclusion|todo|question|location|time","aliases":["..."]}],"links":[{"source":"n1","target":"n2","type":"causes|part_of|supports|happens_at|located_in|related_to","evidence":"原文短句"}],"_quality":"节点置信度0-1，通用名词、低信息量节点应低于0.5"}\n' +
+                '规则：1) nodes≤25 links≤40；2) evidence取原文短句；3) 不确定时type用related_to，kind用concept；4) 质量优先数量 — 宁可少抽，不要抽垃圾。',
             },
             { role: 'user', content: params.content },
           ],

@@ -1,142 +1,89 @@
 /**
- * POST /api/summarize — 近期总结端点
- * 按 7 天或 30 天聚合捕获内容和图谱变化，调用 LLM 生成结构化总结。
+ * POST /api/summarize — 近期总结端点（深度版）
+ *
+ * 产出叙事式总结，帮助用户"认清自己"并指导下一步行动。
+ *
+ * 流程：
+ *   1. 聚合当前周期数据（捕获、节点、关系、标签频率）
+ *   2. 查询上一周期数据做趋势对比
+ *   3. 提取代表性原文摘录
+ *   4. LLM 生成叙事总结（含 narrative + themes + nextActions）
+ *   5. LLM 不可用时确定性降级
  *
  * Mock Input/Output:
- *   Input:  POST { "period": "7d", "scope_id": "00000000-0000-0000-0000-000000000000" }
- *   Output: { "ok": true, "period": "7d", "themes": [...], "importantNodes": [...],
- *             "newConnections": [...], "nextActions": [...], "stats": {...} }
+ *   Input:  POST { "period": "7d", "demo": true }
+ *   Output: { "ok": true, "narrative": "这周你...", "themes": [...], "trends": [...], "nextActions": [...] }
  */
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope, type RequestScope } from './_lib/requestScope.js';
+import { isTrivialNodeName, isNoiseCapture } from './_lib/noise.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
-const MAX_INPUT_CHARS = 6000;
+const MAX_INPUT_CHARS = 8000;
 
 // ---------------------------------------------------------------------------
-// JSON 修复（服务端版，复用 ai.ts 的 extractJsonObjects 思路）
+// JSON 修复
 // ---------------------------------------------------------------------------
 
 function safeJsonParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(text); } catch { return null; }
 }
 
-/**
- * 修复 LLM 输出 JSON 中字符串值里未转义的 ASCII 引号
- * （例如 MiniMax 常输出 "由"处理中"切换" 这类内嵌引号，会导致 JSON.parse 失败）。
- * 仅在结构上下文之外的裸引号才转义，合法 JSON 不受影响。
- */
 function repairUnescapedQuotes(text: string): string {
-  const s = (text || '').trim();
-  if (!s) return s;
-  let out = '';
+  let result = '';
   let inString = false;
-  let escaped = false;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (inString) {
-      if (escaped) {
-        out += ch;
-        escaped = false;
-        continue;
-      }
-      if (ch === '\\') {
-        out += ch;
-        escaped = true;
-        continue;
-      }
-      if (ch === '"') {
-        let j = i + 1;
-        while (j < s.length && /\s/.test(s[j])) j++;
-        const next = j >= s.length ? undefined : s[j];
-        if (next === ',' || next === '}' || next === ']' || next === ':' || next === undefined) {
-          out += ch;
-          inString = false;
-        } else {
-          out += '\\"';
-        }
-        continue;
-      }
-      out += ch;
-      continue;
+  let prev = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"' && prev !== '\\' && !inString) {
+      inString = true;
+    } else if (ch === '"' && prev !== '\\' && inString) {
+      inString = false;
     }
-    if (ch === '"') {
-      let k = i - 1;
-      while (k >= 0 && /\s/.test(s[k])) k--;
-      const prev = k < 0 ? undefined : s[k];
-      if (prev === ':' || prev === ',' || prev === '[' || prev === '{' || prev === undefined) {
-        out += ch;
-        inString = true;
-      } else {
-        out += '\\"';
-      }
-      continue;
+    if (ch === '"' && inString && prev !== '\\') {
+      result += '\\"';
+    } else {
+      result += ch;
     }
-    out += ch;
+    prev = ch;
   }
-  return out;
+  return result;
 }
 
 function extractJsonObjects(text: string): string[] {
-  const s = (text || '').trim();
   const results: string[] = [];
-  let i = 0;
-  while (i < s.length) {
-    const start = s.indexOf('{', i);
-    if (start < 0) break;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let j = start; j < s.length; j++) {
-      const ch = s[j];
-      if (escaped) { escaped = false; continue; }
-      if (ch === '\\') { escaped = true; continue; }
-      if (ch === '"') { inString = !inString; continue; }
-      if (inString) continue;
-      if (ch === '{') depth++;
-      else if (ch === '}') {
-        depth--;
-        if (depth === 0) {
-          results.push(s.slice(start, j + 1));
-          i = j + 1;
-          break;
-        }
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (text[i] === '}') {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        results.push(text.slice(start, i + 1));
+        start = -1;
       }
     }
-    if (depth !== 0) break;
   }
   return results;
 }
 
 function normalizeContentToJson(text: string): Record<string, unknown> | null {
-  const trimmed = (text || '').trim();
-  const withoutFence = trimmed
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```$/i, '')
-    .trim();
-
-  const direct = safeJsonParse(withoutFence) as Record<string, unknown> | null;
-  if (direct) return direct;
-
-
-  const repaired = safeJsonParse(repairUnescapedQuotes(withoutFence)) as Record<string, unknown> | null;
-  if (repaired) return repaired;
-
-  const all = extractJsonObjects(withoutFence);
-  for (let idx = all.length - 1; idx >= 0; idx--) {
-    const parsed = safeJsonParse(all[idx]) as Record<string, unknown> | null;
-    if (parsed && (parsed.themes || parsed.importantNodes || parsed.nextActions)) {
-      return parsed;
-    }
+  const objects = extractJsonObjects(text);
+  for (const obj of objects.reverse()) {
+    const parsed = safeJsonParse(obj) as Record<string, unknown> | null;
+    if (parsed && typeof parsed === 'object') return parsed;
+  }
+  const repaired = repairUnescapedQuotes(text);
+  const fixedObjects = extractJsonObjects(repaired);
+  for (const obj of fixedObjects.reverse()) {
+    const parsed = safeJsonParse(obj) as Record<string, unknown> | null;
+    if (parsed && typeof parsed === 'object') return parsed;
   }
   return null;
 }
@@ -146,7 +93,7 @@ function stripTrailingV1(url: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 确定性聚合（不依赖 LLM）
+// 数据聚合
 // ---------------------------------------------------------------------------
 
 interface CapturedRow {
@@ -154,6 +101,7 @@ interface CapturedRow {
   type: string;
   title: string;
   summary: string;
+  content: string;
   tags: string[];
   created_at: string;
 }
@@ -182,8 +130,13 @@ interface AggregatedData {
   newNodeCount: number;
   newLinkCount: number;
   tagFreq: Map<string, number>;
-  nodeList: { name: string; kind: string; createdAt: string }[];
+  capturedList: { title: string; summary: string; content: string; tags: string[]; createdAt: string }[];
+  nodeList: { name: string; kind: string; createdAt: string; sourceCount: number }[];
   linkList: { from: string; to: string; type: string }[];
+  /** 图中心度前5节点（按关联 capture 数） */
+  centralNodes: { name: string; kind: string; connectCount: number }[];
+  /** 代表性摘录 */
+  excerpts: string[];
 }
 
 async function aggregateData(
@@ -197,29 +150,185 @@ async function aggregateData(
     Authorization: `Bearer ${supabaseKey}`,
   };
 
-  // 查询 captured_info（captured_info 无 scope_id 列，demo 用 user_id IS NULL，真实用户用 user_id = scopeId）
   const capturedFilter = scope.isDemo ? 'user_id=is.null' : `user_id=eq.${encodeURIComponent(scope.scopeId)}`;
-  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,tags,created_at&created_at=gte.${encodeURIComponent(since)}&${capturedFilter}&order=created_at.desc&limit=50`;
+  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(since)}&${capturedFilter}&order=created_at.desc&limit=50`;
   const capturedResp = await fetch(capturedUrl, { headers });
   const captured: CapturedRow[] = capturedResp.ok ? (await capturedResp.json()) as CapturedRow[] : [];
 
-  // 查询 knowledge_nodes（该表有 scope_id 生成列）
   const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=100`;
   const nodesResp = await fetch(nodesUrl, { headers });
   const nodes: NodeRow[] = nodesResp.ok ? (await nodesResp.json()) as NodeRow[] : [];
 
-  // 查询 knowledge_links（列名为 source/target，通过 FK 嵌入节点名；links 有 scope_id 生成列）
   const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,source,target,relation_type,evidence_captured_ids,created_at,source_node:knowledge_nodes!knowledge_links_source_fkey(name),target_node:knowledge_nodes!knowledge_links_target_fkey(name)&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=200`;
   const linksResp = await fetch(linksUrl, { headers });
   const rawLinks: LinkRow[] = linksResp.ok ? (await linksResp.json()) as LinkRow[] : [];
 
-  // 只保留两端至少一端在 scope 内的链接
   const scopeNodeIds = new Set(nodes.map((n) => n.id));
   const scopeLinks = rawLinks.filter(
     (l) => scopeNodeIds.has(l.source) || scopeNodeIds.has(l.target),
   );
 
-  // 聚合标签频率
+  // 标签频率
+  const tagFreq = new Map<string, number>();
+  for (const item of captured) {
+    if (Array.isArray(item.tags)) {
+      for (const tag of item.tags) {
+        if (typeof tag === 'string') {
+          tagFreq.set(tag, (tagFreq.get(tag) || 0) + 1);
+        }
+      }
+    }
+  }
+
+  // 图中心度：按关联 source_captured_ids 数排序，排除噪声节点
+  const centralNodes = nodes
+    .map((n) => ({
+      name: n.name,
+      kind: n.kind,
+      connectCount: (Array.isArray(n.source_captured_ids) ? n.source_captured_ids.length : 0),
+    }))
+    .filter((n) => n.connectCount > 0)
+    .filter((n) => !isTrivialNodeName(n.name))
+    .sort((a, b) => b.connectCount - a.connectCount)
+    .slice(0, 5);
+
+  // 代表性摘录：排除噪声捕获，取有实质内容的，选前3条
+  const excerpts = captured
+    .filter((c) => !isNoiseCapture(c.title, c.summary, c.content))
+    .filter((c) => c.summary || c.content)
+    .slice(0, 3)
+    .map((c) => {
+      const text = (c.summary || c.content || '').slice(0, 120);
+      return text ? `「${c.title || '未命名'}」${text}${text.length >= 120 ? '...' : ''}` : '';
+    })
+    .filter(Boolean);
+
+  return {
+    capturedCount: captured.length,
+    newNodeCount: nodes.length,
+    newLinkCount: scopeLinks.length,
+    tagFreq,
+    capturedList: captured
+      .filter((c) => !isNoiseCapture(c.title, c.summary, c.content))
+      .map((c) => ({
+        title: c.title,
+        summary: c.summary,
+        content: c.content,
+        tags: c.tags,
+        createdAt: c.created_at,
+      })),
+    nodeList: nodes
+      .filter((n) => !isTrivialNodeName(n.name))
+      .map((n) => ({
+        name: n.name,
+        kind: n.kind,
+        createdAt: n.created_at,
+        sourceCount: Array.isArray(n.source_captured_ids) ? n.source_captured_ids.length : 0,
+      })),
+    linkList: scopeLinks
+      .filter((l) => {
+        const fromName = l.source_node?.name || '';
+        const toName = l.target_node?.name || '';
+        // 排除两端都是噪声节点的 link（如 "午饭→红烧肉"）
+        if (isTrivialNodeName(fromName) && isTrivialNodeName(toName)) return false;
+        return true;
+      })
+      .map((l) => ({
+        from: l.source_node?.name || '未知',
+        to: l.target_node?.name || '未知',
+        type: l.relation_type,
+      })),
+    centralNodes,
+    excerpts,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 趋势检测
+// ---------------------------------------------------------------------------
+
+interface TrendItem {
+  label: string;
+  direction: 'up' | 'down' | 'new' | 'stable';
+  detail: string;
+}
+
+function detectTrends(current: AggregatedData, previous: AggregatedData): TrendItem[] {
+  const trends: TrendItem[] = [];
+
+  // 捕获量变化
+  const captureDelta = current.capturedCount - previous.capturedCount;
+  if (previous.capturedCount > 0) {
+    const pct = Math.round((captureDelta / previous.capturedCount) * 100);
+    if (pct >= 30) {
+      trends.push({ label: '捕获活跃度', direction: 'up', detail: `记录数量增长 ${pct}%（${previous.capturedCount}→${current.capturedCount} 条）` });
+    } else if (pct <= -30) {
+      trends.push({ label: '捕获活跃度', direction: 'down', detail: `记录数量下降 ${Math.abs(pct)}%（${previous.capturedCount}→${current.capturedCount} 条）` });
+    } else {
+      trends.push({ label: '捕获活跃度', direction: 'stable', detail: `记录数量稳定（${current.capturedCount} 条）` });
+    }
+  } else if (current.capturedCount > 0) {
+    trends.push({ label: '开始记录', direction: 'new', detail: `这是你开始系统记录的第一期（${current.capturedCount} 条）` });
+  }
+
+  // 新节点量变化
+  const nodeDelta = current.newNodeCount - previous.newNodeCount;
+  if (previous.newNodeCount > 0) {
+    const pct = Math.round((nodeDelta / previous.newNodeCount) * 100);
+    if (pct >= 30) trends.push({ label: '知识增长', direction: 'up', detail: `新知识节点增长 ${pct}%` });
+    else if (pct <= -30) trends.push({ label: '知识增长', direction: 'down', detail: `新知识节点减少` });
+  }
+
+  // 新关系量
+  const linkDelta = current.newLinkCount - previous.newLinkCount;
+  if (previous.newLinkCount > 0 && linkDelta > 0) {
+    const pct = Math.round((linkDelta / previous.newLinkCount) * 100);
+    if (pct >= 30) trends.push({ label: '知识连接', direction: 'up', detail: `知识节点间的连接增长 ${pct}%` });
+  }
+
+  // 新兴标签
+  const currentTags = new Set(current.tagFreq.keys());
+  const newTags = [...currentTags].filter((t) => !previous.tagFreq.has(t));
+  if (newTags.length >= 2) {
+    trends.push({ label: '新关注点', direction: 'new', detail: `出现了新话题：${newTags.slice(0, 3).join('、')}` });
+  }
+
+  return trends.slice(0, 5);
+}
+
+async function fetchPreviousPeriod(
+  scope: RequestScope,
+  currentSince: string,
+  supabaseKey: string,
+): Promise<AggregatedData> {
+  const days = 7; // 对比上一周
+  const prevSince = new Date(new Date(currentSince).getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+  const prevUntil = currentSince;
+
+  const baseUrl = SUPABASE_URL.replace(/\/$/, '');
+  const headers = {
+    apikey: supabaseKey,
+    Authorization: `Bearer ${supabaseKey}`,
+  };
+
+  const capturedFilter = scope.isDemo ? 'user_id=is.null' : `user_id=eq.${encodeURIComponent(scope.scopeId)}`;
+  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&${capturedFilter}&order=created_at.desc&limit=50`;
+  const capturedResp = await fetch(capturedUrl, { headers });
+  const captured: CapturedRow[] = capturedResp.ok ? (await capturedResp.json()) as CapturedRow[] : [];
+
+  const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&order=created_at.desc&limit=100`;
+  const nodesResp = await fetch(nodesUrl, { headers });
+  const nodes: NodeRow[] = nodesResp.ok ? (await nodesResp.json()) as NodeRow[] : [];
+
+  const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,source,target,relation_type,evidence_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&order=created_at.desc&limit=200`;
+  const linksResp = await fetch(linksUrl, { headers });
+  const rawLinks: LinkRow[] = linksResp.ok ? (await linksResp.json()) as LinkRow[] : [];
+
+  const prevNodeIds = new Set(nodes.map((n) => n.id));
+  const prevLinks = rawLinks.filter(
+    (l) => prevNodeIds.has(l.source) || prevNodeIds.has(l.target),
+  );
+
   const tagFreq = new Map<string, number>();
   for (const item of captured) {
     if (Array.isArray(item.tags)) {
@@ -234,43 +343,81 @@ async function aggregateData(
   return {
     capturedCount: captured.length,
     newNodeCount: nodes.length,
-    newLinkCount: scopeLinks.length,
+    newLinkCount: prevLinks.length,
     tagFreq,
-    nodeList: nodes.map((n) => ({
-      name: n.name,
-      kind: n.kind,
-      createdAt: n.created_at,
-    })),
-    linkList: scopeLinks.map((l) => ({
-      from: l.source_node?.name || '未知',
-      to: l.target_node?.name || '未知',
-      type: l.relation_type,
-    })),
+    capturedList: [],
+    nodeList: [],
+    linkList: [],
+    centralNodes: [],
+    excerpts: [],
   };
 }
 
-function buildDeterministicResponse(agg: AggregatedData, period: string) {
+// ---------------------------------------------------------------------------
+// 确定性降级
+// ---------------------------------------------------------------------------
+
+function buildDeterministicResponse(agg: AggregatedData, period: string, trends: TrendItem[]) {
   const sortedTags = [...agg.tagFreq.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
 
   const themes = sortedTags.map(([name, count]) => ({ name, count }));
-  const importantNodes = agg.nodeList.slice(0, 5).map((n) => ({
+  const importantNodes = agg.centralNodes.map((n) => ({
     name: n.name,
     kind: n.kind,
-    reason: `近期新增${n.kind}`,
+    reason: `关联 ${n.connectCount} 条捕获，是当前知识网络的核心节点`,
   }));
+
   const newConnections = agg.linkList.slice(0, 5).map((l) => ({
     from: l.from,
     to: l.to,
     relationType: l.type,
   }));
+
   const nextActions: string[] = [];
+
+  // 1. 捕获量评估
   if (agg.capturedCount === 0) {
-    nextActions.push('当前没有新捕获的内容，去捕获一些想法吧');
+    nextActions.push('当前没有新捕获的内容，去记录一些想法吧');
+  } else if (agg.capturedCount <= 3) {
+    nextActions.push(`近${period}只记录了 ${agg.capturedCount} 条，试着每天记一条，积累越多越容易发现规律`);
   }
+
+  // 2. 未生成知识节点——引导关联
   if (agg.newNodeCount === 0 && agg.capturedCount > 0) {
-    nextActions.push('有新的捕获内容但未生成知识节点，检查图谱提取是否运行');
+    nextActions.push(`${agg.capturedCount} 条新捕获都没有生成知识节点，检查图谱抽取是否正常，或手动为重要内容创建节点`);
+  }
+
+  // 3. 形成中的主题（高频标签）
+  const formingTags = [...agg.tagFreq.entries()]
+    .filter(([, count]) => count >= 3)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+  if (formingTags.length > 0) {
+    const tagNames = formingTags.map(([name]) => `「${name}」`).join('、');
+    nextActions.push(`高频标签 ${tagNames} 正在形成主题，把这些相关捕获连接起来可以帮你发现更深层的模式`);
+  }
+
+  // 4. 核心节点——给出具体探索方向
+  if (agg.centralNodes.length > 0) {
+    const top = agg.centralNodes[0];
+    const topTags = [...agg.tagFreq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+    if (topTags.length > 0) {
+      nextActions.push(`核心节点「${top.name}」关联了 ${top.connectCount} 条捕获，试着按 ${topTags.map(([n]) => `「${n}」`).join('、')} 等标签重新分类，可能会发现新的关联`);
+    } else {
+      nextActions.push(`核心节点「${top.name}」关联了 ${top.connectCount} 条捕获，回顾这些内容看看它们之间有什么共同线索`);
+    }
+  }
+
+  // 5. 趋势驱动的行动
+  const growthTrend = trends.find((t) => t.direction === 'up' && t.detail.includes('增长'));
+  if (growthTrend) {
+    nextActions.push(`记录量在上升，趁热打铁：本周每天固定时段捕获，养成习惯后你会看到更清晰的趋势`);
+  }
+  const newTopicTrend = trends.find((t) => t.direction === 'new' && t.detail.includes('新话题'));
+  if (newTopicTrend) {
+    nextActions.push(`出现了新话题，花 10 分钟回顾这些新内容，给它们打上标签，让后续分析更精准`);
   }
 
   return {
@@ -280,6 +427,8 @@ function buildDeterministicResponse(agg: AggregatedData, period: string) {
     importantNodes,
     newConnections,
     nextActions,
+    trends,
+    highlights: agg.excerpts,
     stats: {
       capturedCount: agg.capturedCount,
       newNodeCount: agg.newNodeCount,
@@ -289,32 +438,62 @@ function buildDeterministicResponse(agg: AggregatedData, period: string) {
 }
 
 // ---------------------------------------------------------------------------
-// LLM 调用
+// LLM
 // ---------------------------------------------------------------------------
 
-function formatContextForLLM(agg: AggregatedData): string {
+function formatContextForLLM(agg: AggregatedData, trends: TrendItem[]): string {
   const parts: string[] = [];
 
-  parts.push(`统计：捕获 ${agg.capturedCount} 条，新节点 ${agg.newNodeCount} 个，新关系 ${agg.newLinkCount} 条`);
+  // 叙事上下文
+  parts.push(`你是一位知识管理教练。用户的近期数据如下，请生成一段有深度的叙事式总结，帮助用户"认清自己"并指导下一步行动。`);
+
+  parts.push(`## 统计数据`);
+  parts.push(`- 新捕获：${agg.capturedCount} 条`);
+  parts.push(`- 新知识节点：${agg.newNodeCount} 个`);
+  parts.push(`- 新知识关系：${agg.newLinkCount} 条`);
 
   const sortedTags = [...agg.tagFreq.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8);
   if (sortedTags.length > 0) {
-    parts.push(`高频标签：${sortedTags.map(([t, c]) => `${t}(${c}次)`).join('、')}`);
+    parts.push(`- 高频标签：${sortedTags.map(([t, c]) => `${t}(${c}次)`).join('、')}`);
   }
 
-  if (agg.nodeList.length > 0) {
-    const nodeLines = agg.nodeList.slice(0, 10).map((n) => `- ${n.name} [${n.kind}]`);
-    parts.push(`新增节点：\n${nodeLines.join('\n')}`);
+  // 核心节点
+  if (agg.centralNodes.length > 0) {
+    parts.push(`\n## 核心知识节点`);
+    parts.push(agg.centralNodes.map((n) => `- ${n.name} [${n.kind}]：关联 ${n.connectCount} 条内容`).join('\n'));
   }
 
+  // 新关系
   if (agg.linkList.length > 0) {
-    const linkLines = agg.linkList.slice(0, 10).map((l) => `- ${l.from} → ${l.to} (${l.type})`);
-    parts.push(`新增关系：\n${linkLines.join('\n')}`);
+    parts.push(`\n## 新增关系（最多 8 条）`);
+    parts.push(agg.linkList.slice(0, 8).map((l) => `- ${l.from} → ${l.to}（${l.type}）`).join('\n'));
   }
 
-  return parts.join('\n\n').slice(0, MAX_INPUT_CHARS);
+  // 趋势
+  if (trends.length > 0) {
+    parts.push(`\n## 变化趋势`);
+    parts.push(trends.map((t) => `- ${t.label}：${t.detail}`).join('\n'));
+  }
+
+  // 原文摘录
+  if (agg.excerpts.length > 0) {
+    parts.push(`\n## 代表性记录摘录`);
+    parts.push(agg.excerpts.map((e) => `- ${e}`).join('\n'));
+  }
+
+  // 捕获列表（摘要）
+  if (agg.capturedList.length > 0) {
+    parts.push(`\n## 近期所有记录（最多 15 条）`);
+    parts.push(agg.capturedList.slice(0, 15).map((c) => {
+      const tagStr = c.tags?.length ? `[${c.tags.join(', ')}]` : '';
+      const excerpt = (c.summary || c.content || '').slice(0, 80);
+      return `- ${c.title}${tagStr ? ' ' + tagStr : ''}${excerpt ? '：' + excerpt : ''}`;
+    }).join('\n'));
+  }
+
+  return parts.join('\n').slice(0, MAX_INPUT_CHARS);
 }
 
 async function callChatCompletion(
@@ -334,8 +513,25 @@ async function callChatCompletion(
       messages: [
         {
           role: 'system',
-          content:
-            '你是知识管理助手。根据提供的近期数据统计，生成结构化总结 JSON。只返回 JSON，不要 Markdown。格式：{"themes":[{"name":"主题","count":3}],"importantNodes":[{"name":"节点","kind":"概念","reason":"新增的核心概念"}],"newConnections":[{"from":"A","to":"B","relationType":"相关"}],"nextActions":["建议1","建议2"]}。每个数组最多 5 项。',
+          content: `你是知识管理教练。根据用户近期数据，生成深度结构化总结。只返回 JSON，不要 Markdown。
+
+JSON 格式（每字段最多 5 项）：
+{
+  "narrative": "一段连贯的叙事式总结（100-200字），分析用户这段时间在关注什么、什么在变化、有什么值得注意的模式。不要罗列数据，要讲故事、找关联、给出洞察。用第二人称"你"。",
+  "themes": [{"name": "主题名", "count": 数字, "insight": "关于这个主题的一两句深度分析"}],
+  "importantNodes": [{"name": "节点名", "kind": "类型", "reason": "为什么重要（结合用户行为和趋势）"}],
+  "newConnections": [{"from": "A", "to": "B", "relationType": "关系类型", "significance": "这个关联对用户的意义"}],
+  "nextActions": ["具体可执行的下一步行动建议（要有依据，来自数据中发现的模式、缺口或趋势）"]
+}
+
+要求：
+- narrative 要生动、有温度、有洞察，像一位了解你的教练在跟你对话
+- themes 的 insight 不要只说"这是高频主题"，要分析该主题的出现模式、与其它主题的关联
+- nextActions 要具体可执行（如"本周尝试记录每次加班后的睡眠时长，检验你怀疑的因果关系"），不要空话（如"继续努力"）
+- 从数据出发，不要编造不存在的趋势或关系
+- 【重要】忽略以下无意义内容：日常琐碎（吃饭、睡觉、通勤）、具体时刻（22点、00:40）、泛化概念（计划、工作、学习、生活）、泛称地点（家、公司、食堂）。这些不会产生有价值的洞察
+- importantNodes 只选对用户有实质意义的节点（如具体项目名、方法论、工具、人名、关键结论），不要选日常生活类节点
+- 如果数据中只有琐碎节点，importantNodes 可以少于 5 个，宁缺毋滥`,
         },
         { role: 'user', content },
       ],
@@ -375,7 +571,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const supabaseKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
 
-  // 计算 UTC 起止时间
   const now = new Date();
   const days = period === '7d' ? 7 : 30;
   const since = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -389,9 +584,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const queryToken = requestScope.accessToken || supabaseKey;
     const agg = await aggregateData(requestScope, since, queryToken);
 
-    // 无数据时直接返回空状态
+    // 趋势检测：查询上一周期做对比
+    const prevAgg = await fetchPreviousPeriod(requestScope, since, queryToken);
+    const trends = detectTrends(agg, prevAgg);
+
+    // 无数据
     if (agg.capturedCount === 0 && agg.newNodeCount === 0) {
-      const empty = buildDeterministicResponse(agg, period);
+      const empty = buildDeterministicResponse(agg, period, trends);
       res.status(200).json(empty);
       return;
     }
@@ -399,8 +598,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 尝试 LLM
     const apiKey = process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
     if (!apiKey) {
-      // 无 API Key: 降级为确定性总结
-      const fallback = buildDeterministicResponse(agg, period);
+      const fallback = buildDeterministicResponse(agg, period, trends);
       fallback.nextActions.push('LLM 不可用，当前为统计摘要');
       res.status(200).json(fallback);
       return;
@@ -421,7 +619,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `${stripTrailingV1(baseUrl).replace(/\/$/, '')}/chat/completions`,
     ];
 
-    const context = formatContextForLLM(agg);
+    const context = formatContextForLLM(agg, trends);
 
     for (const model of candidates) {
       let r: Awaited<ReturnType<typeof callChatCompletion>> | null = null;
@@ -442,6 +640,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const parsed = normalizeContentToJson(text);
       if (parsed) {
+        const narrative = typeof parsed.narrative === 'string' ? parsed.narrative : undefined;
+
         const themes = Array.isArray(parsed.themes)
           ? (parsed.themes as Record<string, unknown>[]).map((t) => ({
               name: typeof t.name === 'string' ? t.name : '',
@@ -472,10 +672,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         res.status(200).json({
           ok: true,
           period,
+          narrative,
           themes: themes.slice(0, 5),
           importantNodes: importantNodes.slice(0, 5),
           newConnections: newConnections.slice(0, 5),
           nextActions: nextActions.slice(0, 5),
+          trends,
+          highlights: agg.excerpts,
           stats: {
             capturedCount: agg.capturedCount,
             newNodeCount: agg.newNodeCount,
@@ -487,7 +690,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // LLM 全部失败 → 确定性降级
-    const fallback = buildDeterministicResponse(agg, period);
+    const fallback = buildDeterministicResponse(agg, period, trends);
     res.status(200).json(fallback);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
