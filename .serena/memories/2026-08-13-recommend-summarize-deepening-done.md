@@ -71,3 +71,20 @@
 - 英文术语节点抽取（NER/Supabase/Tailwind 等）仍被 MiniMax 模型丢弃（prompt 强化 3 次无效）
 - 睡眠语义簇（睡不着/凌晨醒）BGE-M3 相似度 <0.55，属模型 embedding 能力边界，非代码缺陷
 - 评估依赖 demo scope 数据状态；清空后需重跑 `--dataset deepening` 种子
+
+## L1 外部验证：CLUENER2020 实体切片（提交 90742db）
+
+用清华/CLUE 权威 NER 基准（30 条采样，覆盖 name/address/scene/organization/government/position + 无实体对照）外部验证 `/api/graph/extract`：
+
+| 指标 | 微调前 | 微调后 |
+|------|--------|--------|
+| 实体召回率（全类别） | 76% | **81%** |
+| person/location 精确率 | 89% | **93%** |
+| 可疑幻觉节点 | 5 | 3（均为 CLUENER 未标注的地名如"好莱坞/意大利"，非编造） |
+
+权威数据暴露的真缺陷：抽取 schema 没有 organization/role 节点类型，导致 曼联/公安部/新浪房产/记者/队长 等实体被系统性丢弃 → prompt 新增两类节点规则 + 输出格式枚举更新。回归门禁（eval-effectiveness）综合 98% 无回归。
+
+已知边界（CLUENER 测试如实反映）：
+- 英文人名（Riddick/Svensson）仍丢失——MiniMax 模型拉丁词局限的又一证据
+- 职位类通用词（演员）仍有漏抽；长地址被拆成多段（朝阳区/望京/南湖南路10号）——包含匹配给部分分
+- 数据自动下载脚本：`node scripts/eval-cluener.mjs`（下载到 scripts/eval-data/，已 gitignore）
