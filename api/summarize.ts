@@ -419,11 +419,11 @@ async function fetchPreviousPeriod(
 // 确定性降级
 // ---------------------------------------------------------------------------
 
-/** 按方向配额选取主题动态：升温2 + 新生2 + 降温4，保证下降面也完整可见 */
+/** 按方向配额选取主题动态：升温3 + 新生3 + 降温4，覆盖多主题库的次级信号 */
 function pickThemeTrends(map: Map<string, ThemeTrend>): ThemeTrend[] {
   const all = [...map.values()];
   const by = (dir: ThemeTrend['direction'], n: number) => all.filter((t) => t.direction === dir).slice(0, n);
-  return [...by('up', 2), ...by('new', 2), ...by('down', 4)];
+  return [...by('up', 3), ...by('new', 3), ...by('down', 4)];
 }
 
 /** 确定性叙事：LLM 不可用时也给出连贯、有洞察的叙述，而非数据罗列 */
