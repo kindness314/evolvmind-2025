@@ -128,6 +128,8 @@ interface LinkRow {
 
 interface AggregatedData {
   capturedCount: number;
+  /** 捕获查询是否触达 limit=100 上限（真实数量可能更多） */
+  capturedCapHit: boolean;
   newNodeCount: number;
   newLinkCount: number;
   tagFreq: Map<string, number>;
@@ -206,6 +208,7 @@ async function aggregateData(
 
   return {
     capturedCount: captured.length,
+    capturedCapHit: captured.length >= 100,
     newNodeCount: nodes.length,
     newLinkCount: scopeLinks.length,
     tagFreq,
@@ -404,6 +407,7 @@ async function fetchPreviousPeriod(
 
   return {
     capturedCount: captured.length,
+    capturedCapHit: captured.length >= 100,
     newNodeCount: nodes.length,
     newLinkCount: prevLinks.length,
     tagFreq,
@@ -438,7 +442,7 @@ function buildNarrative(
   }
 
   const parts: string[] = [];
-  parts.push(`${periodText}你记录了 ${agg.capturedCount} 条内容，知识图谱随之新增了 ${agg.newNodeCount} 个节点和 ${agg.newLinkCount} 条关联。`);
+  parts.push(`${periodText}你记录了 ${agg.capturedCount}${agg.capturedCapHit ? '+' : ''} 条内容，知识图谱随之新增了 ${agg.newNodeCount} 个节点和 ${agg.newLinkCount} 条关联。`);
 
   const sortedTags = [...agg.tagFreq.entries()].sort((a, b) => b[1] - a[1]);
   if (sortedTags.length > 0) {
@@ -673,6 +677,7 @@ async function callChatCompletion(
         {
           role: 'system',
           content: `你是知识管理教练。根据用户近期数据，生成深度结构化总结。只返回 JSON，不要 Markdown。
+【最高优先级·严禁编造数据】只能原样引用上下文中明确出现的数字短语（如"记录数量增长 900%"），禁止创造、改写或换算任何数字、百分比、倍数与时间跨度（如"连续三个月""下降32%""飙升5倍"）；需要表达量级时用定性词（"明显上升""大幅减少"）。所有因果断言必须能被捕获记录直接支撑。这是硬性要求，违反即视为失败。
 
 JSON 格式（每字段最多 5 项）：
 {
@@ -687,7 +692,6 @@ JSON 格式（每字段最多 5 项）：
 - narrative 要生动、有温度、有洞察，像一位了解你的教练在跟你对话
 - themes 的 insight 不要只说"这是高频主题"，要分析该主题的出现模式、与其它主题的关联
 - nextActions 要具体可执行（如"本周尝试记录每次加班后的睡眠时长，检验你怀疑的因果关系"），不要空话（如"继续努力"）
-- 从数据出发，不要编造不存在的趋势或关系
 - 【重要】忽略以下无意义内容：日常琐碎（吃饭、睡觉、通勤）、具体时刻（22点、00:40）、泛化概念（计划、工作、学习、生活）、泛称地点（家、公司、食堂）。这些不会产生有价值的洞察
 - importantNodes 只选对用户有实质意义的节点（如具体项目名、方法论、工具、人名、关键结论），不要选日常生活类节点
 - 如果数据中只有琐碎节点，importantNodes 可以少于 5 个，宁缺毋滥`,
