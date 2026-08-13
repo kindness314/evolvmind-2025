@@ -211,12 +211,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- Rule 2: semantic — embedding 相似但对（无共享标签）---
     if (recommendations.length < MAX_RECOMMENDATIONS && embeddedCaptures.length >= 2) {
       const similarPairs = findSimilarPairs(embeddedCaptures, {
-        minSimilarity: 0.70,
+        minSimilarity: 0.60,
         excludeSharedTags: true,
         maxPairs: MAX_RECOMMENDATIONS,
       });
+      // 多样性：同一捕获最多参与 1 条语义推荐，避免同一捕获与多个近邻重复刷屏
+      const usedCaptures = new Set<string>();
+      const diversePairs = similarPairs.filter((pair) => {
+        if (usedCaptures.has(pair.a.id) || usedCaptures.has(pair.b.id)) return false;
+        usedCaptures.add(pair.a.id);
+        usedCaptures.add(pair.b.id);
+        return true;
+      });
 
-      for (const pair of similarPairs) {
+      for (const pair of diversePairs) {
         if (recommendations.length >= MAX_RECOMMENDATIONS) break;
         const recId = `sem-${pair.a.id}-${pair.b.id}`;
         if (dismissedIds.includes(recId)) continue;

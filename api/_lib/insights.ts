@@ -112,7 +112,10 @@ export function computeThemeTrends(
 }
 
 /**
- * 由两个频率表直接计算主题方向（窗口大小不同时按"出现率"归一化）。
+ * 由两个频率表直接计算主题方向。
+ * 采用"次数 + 相对占比"双条件（近窗 ≥ 远窗×1.5 且至少多 1 次），
+ * 与用户直觉一致（"本期 3 次 vs 上期 1 次 → 升温"）；
+ * 窗口大小不同时按出现率归一化只在方向判断的边缘处起作用，主判据仍是次数。
  * 供 summarize 的 7d(本期 vs 上期) 与 30d(近7天 vs 更早) 两种窗口复用。
  */
 export function computeThemeDirections(
@@ -125,8 +128,6 @@ export function computeThemeDirections(
   const { minTotal = 2, minRecent = 0 } = opts;
   const names = new Set([...recentFreq.keys(), ...olderFreq.keys()]);
   const out: ThemeTrend[] = [];
-  const recentRate = recentCount > 0 ? recentCount : 1;
-  const olderRate = olderCount > 0 ? olderCount : 1;
 
   for (const name of names) {
     const r = recentFreq.get(name) || 0;
@@ -136,8 +137,8 @@ export function computeThemeDirections(
     let direction: ThemeTrend['direction'] = 'stable';
     if (o === 0 && r > 0) direction = 'new';
     else if (r === 0 && o > 0) direction = 'down';
-    else if (r >= minRecent && r / recentRate >= (o / olderRate) * 1.5) direction = 'up';
-    else if (o / olderRate >= (r / recentRate) * 1.5) direction = 'down';
+    else if (r >= minRecent && r >= o + 1 && r / o >= 1.5) direction = 'up';
+    else if (o >= r + 1 && o / r >= 1.5) direction = 'down';
 
     out.push({
       name,

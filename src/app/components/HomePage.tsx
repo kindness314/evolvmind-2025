@@ -274,6 +274,38 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                 </div>
               )}
 
+              {/* 主题动态（确定性方向信号） */}
+              {summary.themeTrends && summary.themeTrends.length > 0 && (
+                <div className="bg-white border border-gray-200 overflow-hidden" style={{ borderRadius: '4px' }}>
+                  <h4 className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b border-gray-100">
+                    主题动态
+                  </h4>
+                  <div className="px-3 py-2 flex flex-wrap gap-1.5">
+                    {summary.themeTrends.map((t, i) => {
+                      const m = trendMeta[t.direction] || trendMeta.stable;
+                      const chipCls =
+                        t.direction === 'up' || t.direction === 'new'
+                          ? 'border-emerald-100 bg-emerald-50 text-emerald-700'
+                          : t.direction === 'down'
+                            ? 'border-amber-100 bg-amber-50 text-amber-700'
+                            : 'border-gray-100 bg-gray-50 text-gray-500';
+                      return (
+                        <span
+                          key={i}
+                          title={t.detail}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] border ${chipCls}`}
+                          style={{ borderRadius: '3px' }}
+                        >
+                          <span className={m.color}>{m.icon}</span>
+                          {t.name}
+                          <span className="opacity-70">{t.recent}↔{t.older}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Themes（卡片式） */}
               {summary.themes.length > 0 && (
                 <div className="bg-white border border-gray-200 overflow-hidden" style={{ borderRadius: '4px' }}>

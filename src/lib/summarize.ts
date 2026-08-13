@@ -40,14 +40,21 @@ export interface SummaryTrend {
 export interface SummaryResponse {
   ok: boolean;
   period: SummaryPeriod;
-  /** 叙事式总结（LLM 生成时提供） */
+  /** 变化趋势（对比上一周期） */
+  trends: SummaryTrend[];
+  /** 主题方向明细（确定性信号，含升温/新生/降温） */
+  themeTrends?: Array<{
+    name: string;
+    recent: number;
+    older: number;
+    direction: 'up' | 'down' | 'new' | 'stable';
+    detail: string;
+  }>;
   narrative?: string;
   themes: SummaryTheme[];
   importantNodes: ImportantNode[];
   newConnections: NewConnection[];
   nextActions: string[];
-  /** 变化趋势（对比上一周期） */
-  trends: SummaryTrend[];
   /** 代表性原文摘录 */
   highlights: string[];
   /** 摘要总数统计 */

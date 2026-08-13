@@ -152,7 +152,7 @@ async function aggregateData(
   };
 
   const capturedFilter = scope.isDemo ? 'user_id=is.null' : `user_id=eq.${encodeURIComponent(scope.scopeId)}`;
-  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(since)}&${capturedFilter}&order=created_at.desc&limit=50`;
+  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(since)}&${capturedFilter}&order=created_at.desc&limit=100`;
   const capturedResp = await fetch(capturedUrl, { headers });
   const captured: CapturedRow[] = capturedResp.ok ? (await capturedResp.json()) as CapturedRow[] : [];
 
@@ -374,7 +374,7 @@ async function fetchPreviousPeriod(
   };
 
   const capturedFilter = scope.isDemo ? 'user_id=is.null' : `user_id=eq.${encodeURIComponent(scope.scopeId)}`;
-  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&${capturedFilter}&order=created_at.desc&limit=50`;
+  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&${capturedFilter}&order=created_at.desc&limit=100`;
   const capturedResp = await fetch(capturedUrl, { headers });
   const captured: CapturedRow[] = capturedResp.ok ? (await capturedResp.json()) as CapturedRow[] : [];
 
@@ -418,6 +418,13 @@ async function fetchPreviousPeriod(
 // ---------------------------------------------------------------------------
 // 确定性降级
 // ---------------------------------------------------------------------------
+
+/** 按方向配额选取主题动态：升温2 + 新生2 + 降温4，保证下降面也完整可见 */
+function pickThemeTrends(map: Map<string, ThemeTrend>): ThemeTrend[] {
+  const all = [...map.values()];
+  const by = (dir: ThemeTrend['direction'], n: number) => all.filter((t) => t.direction === dir).slice(0, n);
+  return [...by('up', 2), ...by('new', 2), ...by('down', 4)];
+}
 
 /** 确定性叙事：LLM 不可用时也给出连贯、有洞察的叙述，而非数据罗列 */
 function buildNarrative(
@@ -569,6 +576,7 @@ function buildDeterministicResponse(
     newConnections,
     nextActions,
     trends,
+    themeTrends: pickThemeTrends(themeDirections),
     highlights: agg.excerpts,
     stats: {
       capturedCount: agg.capturedCount,
@@ -582,7 +590,7 @@ function buildDeterministicResponse(
 // LLM
 // ---------------------------------------------------------------------------
 
-function formatContextForLLM(agg: AggregatedData, trends: TrendItem[]): string {
+function formatContextForLLM(agg: AggregatedData, trends: TrendItem[], themeDirections: Map<string, ThemeTrend>): string {
   const parts: string[] = [];
 
   // 叙事上下文
@@ -598,6 +606,16 @@ function formatContextForLLM(agg: AggregatedData, trends: TrendItem[]): string {
     .slice(0, 8);
   if (sortedTags.length > 0) {
     parts.push(`- 高频标签：${sortedTags.map(([t, c]) => `${t}(${c}次)`).join('、')}`);
+  }
+
+  // 主题方向（确定性信号，防止 LLM 只写它自己注意到的主题）
+  const dirThemes = [...themeDirections.values()];
+  const upNew = dirThemes.filter((t) => t.direction === 'up' || t.direction === 'new').slice(0, 4);
+  const down = dirThemes.filter((t) => t.direction === 'down').slice(0, 4);
+  if (upNew.length > 0 || down.length > 0) {
+    parts.push(`\n## 主题方向（数据信号，必须体现在总结里）`);
+    if (upNew.length > 0) parts.push(`- 升温/新生：${upNew.map((t) => `「${t.name}」近7天${t.recent}次 vs 更早${t.older}次`).join('；')}`);
+    if (down.length > 0) parts.push(`- 降温：${down.map((t) => `「${t.name}」近7天${t.recent}次 vs 更早${t.older}次`).join('；')}`);
   }
 
   // 核心节点
@@ -762,7 +780,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `${stripTrailingV1(baseUrl).replace(/\/$/, '')}/chat/completions`,
     ];
 
-    const context = formatContextForLLM(agg, trends);
+    const context = formatContextForLLM(agg, trends, themeDirections);
 
     for (const model of candidates) {
       let r: Awaited<ReturnType<typeof callChatCompletion>> | null = null;
@@ -788,13 +806,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const themes = Array.isArray(parsed.themes)
           ? (parsed.themes as Record<string, unknown>[]).map((t) => {
               const name = typeof t.name === 'string' ? t.name : '';
-              // 方向匹配：LLM 主题名可能包装了标签（"加班的系统性归因"→"加班"）
+              // 方向匹配：LLM 主题名可能包装了标签（"加班的系统性归因"→"加班"）；
+              // 取主题名中最早出现的标签（"冥想与注意力训练"→"冥想"而非"注意力"），
+              // 同位置时取更长的标签。
               let dir = themeDirections.get(name);
               if (!dir) {
+                let bestPos = Number.POSITIVE_INFINITY;
                 let bestLen = 0;
                 for (const [tag, trend] of themeDirections) {
-                  if ((name.includes(tag) || tag.includes(name)) && tag.length > bestLen) {
+                  const pos = name.indexOf(tag);
+                  if (pos >= 0 && (pos < bestPos || (pos === bestPos && tag.length > bestLen))) {
                     dir = trend;
+                    bestPos = pos;
                     bestLen = tag.length;
                   }
                 }
@@ -837,6 +860,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           themes: themes.slice(0, 5),
           importantNodes: importantNodes.slice(0, 5),
           newConnections: newConnections.slice(0, 5),
+          themeTrends: pickThemeTrends(themeDirections),
           nextActions: nextActions.slice(0, 5),
           trends,
           highlights: agg.excerpts,
