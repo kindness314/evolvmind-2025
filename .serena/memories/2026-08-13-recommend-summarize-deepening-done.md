@@ -103,6 +103,19 @@
 
 **规模性发现（4 簇混合库）**：主题动态槽位（现 up3/new3/down4=10）被高计数主题占满，次级信号（理财 recent=1、社交 total=4）在计算层正确但用户不可见；推荐 top-6 槽位同样竞争。抽取不受影响。这解释了 deepening 回归 89%（life 数据加入后槽位竞争），非配额改动回归。
 
-**未做：纯净 scope 隔离测试**（demo 全量数据可重跑种子恢复，但删除属破坏性操作，需用户确认）。
+**纯净 scope 隔离测试（提交 9e1a61b，先备份后清空）**：
+| 维度 | 混合库 | 纯净 life-only |
+|------|--------|--------|
+| 综合 | 85% | **87%**（另一轮 78%，LLM 方差） |
+| 社交降温 | 槽位被挤，不可见 | **themes=down ✓**（LLM 主题"社交能量萎缩"） |
+| forming | 育儿命中 | 育儿+托班双命中 |
+| 语义对 | 设计对未命中 | 机制命中真实新对：奶睡↔深夜带娃 |
+
+纯净测试暴露的残留问题（均如实记录）：
+- LLM 命名方差：同一数据不同轮次主题命名不同（"财务系统觉醒"vs 理财标签），方向匹配尽力后仍有漏检
+- 7d 窗口边界伪影：种子记录 created_at=now-7d，seed 处理延迟使其落出窗口 → 理财 total=1 被 minTotal=2 过滤（生产环境捕获永远"现在"，不踩此边界）
+
+**数据可恢复性保证（demo-backup.mjs）**：backup/verify/wipe/restore 四模式，全量 JSON 导出（含 embedding/原始 id），恢复按原主键幂等回插，备份与恢复均数量校验。实测 144/998/1494 精确恢复，恢复后 deepening 回归 99%（基线 98%）。用法：`node scripts/demo-backup.mjs backup|verify|wipe|restore`
+
 
 harness 用法：`node scripts/eval-effectiveness.mjs --dataset deepening|life`
