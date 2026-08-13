@@ -43,3 +43,6 @@ pnpm-lock.yaml
 .codegraph/
 .omp/
 .taskmaster/
+
+# 评估用第三方数据集（自动下载）
+scripts/eval-data/

@@ -337,6 +337,8 @@ async function callChatCompletion(params: { url: string; apiKey: string; model: 
                 '- todo: 明确的待办事项（如"周五前提交报告"），不要模糊的"要做某事"\n' +
                 '- question: 值得深究的问题（如"为什么深度工作总是被打断？"），不要"Yes/No问题"\n' +
                 '- location: 仅提取有辨识度的具体地点（如"北京""星巴克中关村店""西湖"），不要"家里""公司""食堂""那边"\n' +
+                '- organization: 具体机构、团队、公司或政府部门名（如"曼联""公安部""新浪房产""LGD战队"），不要泛称"公司""单位""团队""政府"\n' +
+                '- role: 具体职位或身份（如"产品经理""记者""队长""导演"），不要模糊的"领导""同事""某人"\n' +
                 '- time: 仅提取具体的日期、周期或时间节点（如"2026年春节""每周五""8月10日"），不要"今天""明天""下午""早上""晚上""上周"\n' +
                 '\n' +
                 '【过滤准则】\n' +
@@ -344,7 +346,7 @@ async function callChatCompletion(params: { url: string; apiKey: string; model: 
                 '通用时间状语、泛称地点、问候语、无信息量记录都不要提取；只包含章节号而无书名/主题的碎片（如"第4章"）不要提取。\n' +
                 '\n' +
                 '【输出格式】\n' +
-                '{"nodes":[{"id":"n1","name":"...","kind":"person|event|object|concept|view|conclusion|todo|question|location|time","aliases":["..."]}],"links":[{"source":"n1","target":"n2","type":"causes|part_of|supports|happens_at|located_in|related_to","evidence":"原文短句"}],"_quality":"节点置信度0-1，通用名词、低信息量节点应低于0.5"}\n' +
+                '{"nodes":[{"id":"n1","name":"...","kind":"person|event|object|concept|view|conclusion|todo|question|location|organization|role|time","aliases":["..."]}],"links":[{"source":"n1","target":"n2","type":"causes|part_of|supports|happens_at|located_in|related_to","evidence":"原文短句"}],"_quality":"节点置信度0-1，通用名词、低信息量节点应低于0.5"}\n' +
                 '规则：1) nodes≤25 links≤40；2) evidence取原文短句；3) 不确定时type用related_to，kind用concept；4) 质量优先数量 — 宁可少抽，不要抽垃圾。',
             },
             { role: 'user', content: params.content },
