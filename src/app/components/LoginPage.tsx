@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Mail, Phone, ArrowLeft, Loader2 } from 'lucide-react';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from './ui/input-otp';
 import { supabase } from '../../lib/supabase';
-
 interface LoginPageProps {
   onLoginSuccess: () => void;
 }
@@ -134,8 +133,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ delay: 0.1, type: 'spring', stiffness: 200 }}
-                className="w-20 h-20 bg-green-500 mx-auto flex items-center justify-center"
-                style={{ borderRadius: '4px' }}
+                className="w-20 h-20 bg-success mx-auto flex items-center justify-center rounded-full"
               >
                 <motion.svg
                   initial={{ pathLength: 0 }}
@@ -177,19 +175,17 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
           >
             {/* 认证方式选择 */}
             <div className="pt-8 pb-4 px-6">
-              <div className="flex bg-gray-100 p-1" style={{ borderRadius: '6px' }}>
+              <div className="flex bg-gray-100 p-1 rounded-xl">
                 <button
                   onClick={() => { setAuthMethod('email'); setError(''); }}
-                  className={`flex-1 py-2 text-sm font-medium transition-all ${authMethod === 'email' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
-                  style={{ borderRadius: '4px' }}
+                  className={`flex-1 py-2 text-sm font-medium transition-all ${authMethod === 'email' ? 'bg-white text-gray-900 shadow-card rounded-lg' : 'text-gray-500'}`}
                 >
                   <Mail className="w-4 h-4 inline mr-1.5" />
                   邮箱
                 </button>
                 <button
                   onClick={() => { setAuthMethod('phone'); setError(''); }}
-                  className={`flex-1 py-2 text-sm font-medium transition-all ${authMethod === 'phone' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
-                  style={{ borderRadius: '4px' }}
+                  className={`flex-1 py-2 text-sm font-medium transition-all ${authMethod === 'phone' ? 'bg-white text-gray-900 shadow-card rounded-lg' : 'text-gray-500'}`}
                 >
                   <Phone className="w-4 h-4 inline mr-1.5" />
                   手机号
@@ -203,8 +199,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ delay: 0.2, type: 'spring', stiffness: 200 }}
-                className="w-16 h-16 bg-blue-500 mx-auto flex items-center justify-center"
-                style={{ borderRadius: '4px' }}
+                className="w-16 h-16 bg-brand mx-auto flex items-center justify-center rounded-2xl shadow-card"
               >
                 {authMethod === 'email' ? (
                   <Mail className="w-8 h-8 text-white" />
@@ -254,8 +249,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                           setError('');
                         }}
                         placeholder="请输入邮箱地址"
-                        className="w-full pl-11 pr-4 py-3 bg-gray-50 border-0 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-                        style={{ borderRadius: '4px' }}
+                        className="w-full pl-11 pr-4 py-3 bg-gray-100 border-0 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand transition-all rounded-xl"
                         onFocus={() => setInputFocused(true)}
                         onBlur={() => setInputFocused(false)}
                       />
@@ -278,14 +272,13 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                           setError('');
                         }}
                         placeholder="请输入手机号"
-                        className="w-full pl-14 pr-4 py-3 bg-gray-50 border-0 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-                        style={{ borderRadius: '4px' }}
+                        className="w-full pl-14 pr-4 py-3 bg-gray-100 border-0 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand transition-all rounded-xl"
                         maxLength={11}
                         onFocus={() => setInputFocused(true)}
                         onBlur={() => setInputFocused(false)}
                       />
                     </div>
-                    <div className="bg-amber-50 p-3 mt-3 text-xs text-amber-700" style={{ borderRadius: '4px' }}>
+                    <div className="bg-warning-soft p-3 mt-3 text-xs text-amber-700 rounded-xl">
                       中国大陆短信验证暂不可用，请使用邮箱登录。
                     </div>
                   </>
@@ -304,8 +297,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                 <button
                   onClick={handleSendCode}
                   disabled={loading || (authMethod === 'email' ? !validateEmail(email) : phone.length !== 11)}
-                  className="w-full mt-6 py-3 bg-blue-500 text-white font-medium disabled:bg-gray-300 disabled:cursor-not-allowed transition-all hover:bg-blue-600 active:scale-98"
-                  style={{ borderRadius: '4px' }}
+                  className="w-full mt-6 py-3 bg-brand text-white font-medium disabled:bg-gray-300 disabled:cursor-not-allowed transition-all hover:bg-brand-strong active:scale-[0.98] rounded-xl shadow-card"
                 >
                   {loading ? (
                     <span className="flex items-center justify-center gap-2">
@@ -331,8 +323,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                     localStorage.setItem('demo_auth', 'true');
                     onLoginSuccess();
                   }}
-                  className="w-full py-2 bg-gray-100 text-gray-700 text-xs font-medium hover:bg-gray-200 transition-colors"
-                  style={{ borderRadius: '4px' }}
+                  className="w-full py-2 bg-gray-100 text-gray-700 text-xs font-medium hover:bg-gray-200 transition-colors rounded-xl"
                 >
                   🚀 演示模式登录（开发使用）
                 </button>
@@ -369,8 +360,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ delay: 0.1, type: 'spring', stiffness: 200 }}
-                className="w-16 h-16 bg-blue-500 mx-auto flex items-center justify-center"
-                style={{ borderRadius: '4px' }}
+                className="w-16 h-16 bg-brand mx-auto flex items-center justify-center rounded-2xl shadow-card"
               >
                 {authMethod === 'email' ? (
                   <Mail className="w-8 h-8 text-white" />
@@ -419,8 +409,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                       <InputOTPSlot
                         key={i}
                         index={i}
-                        className="w-12 h-14 text-xl font-medium border-2 border-gray-200 focus:border-blue-500 transition-colors"
-                        style={{ borderRadius: '4px' }}
+                        className="w-12 h-14 text-xl font-medium border-2 border-gray-200 focus:border-brand transition-colors rounded-lg"
                       />
                     ))}
                   </InputOTPGroup>
@@ -439,7 +428,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                 <button
                   onClick={handleResendCode}
                   disabled={countdown > 0}
-                  className="mt-6 text-sm text-blue-500 disabled:text-gray-400 transition-colors"
+                  className="mt-6 text-sm text-brand disabled:text-gray-400 transition-colors"
                 >
                   {countdown > 0 ? `${countdown}秒后重新发送` : '重新发送验证码'}
                 </button>

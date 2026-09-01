@@ -53,6 +53,7 @@ async function judgeOne(period, summary, captures) {
     stats: summary.stats,
     trends: summary.trends,
     themeTrends: summary.themeTrends,
+    weeklyTimeline: summary.weeklyTimeline || null,
     captures,
   });
   const scores = j.scores || {};

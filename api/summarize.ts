@@ -16,7 +16,8 @@
  */
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope, type RequestScope } from './_lib/requestScope.js';
-import { computeThemeDirections, splitByWindow, tagFrequency, type ThemeTrend } from './_lib/insights.js';
+import { computeThemeDirections, splitByWindow, tagFrequency, computeDepthProfile, findImplicitPairs, type ThemeTrend } from './_lib/insights.js';
+import { detectCommunities, evolutionOf, describeCommunity, type Community } from './_lib/community.js';
 import { isTrivialNodeName, isNoiseCapture } from './_lib/noise.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
@@ -24,6 +25,19 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPA
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
+
+/** P2 社区摘要：一个主题簇的确定性/LLM 摘要块 */
+interface CommunityBlock {
+  name: string;
+  nodeCount: number;
+  capturedCount: number;
+  /** 近窗新增节点数/记录关联数（演化数据） */
+  recentNodes: number;
+  recentCaptures: number;
+  evolution: 'growing' | 'shrinking' | 'stable';
+  /** 确定性描述（describeCommunity）或 LLM 润色的一句话 */
+  summary: string;
+}
 const MAX_INPUT_CHARS = 8000;
 
 // ---------------------------------------------------------------------------
@@ -140,6 +154,27 @@ interface AggregatedData {
   centralNodes: { name: string; kind: string; connectCount: number }[];
   /** 代表性摘录 */
   excerpts: string[];
+  /** 原始图谱行（已滤噪声），供社区检测 */
+  graphNodes: NodeRow[];
+  graphLinks: LinkRow[];
+}
+
+/** 分页拉取全部行：PostgREST 默认 max_rows=1000，limit=100/200 会被静默截断（实测 30d 窗口 120 捕获/907 节点只取回 100） */
+async function fetchAllRows(url: string, headers: Record<string, string>): Promise<unknown[]> {
+  const PAGE = 1000;
+  const rows: unknown[] = [];
+  let from = 0;
+  for (;;) {
+    const resp = await fetch(url, {
+      headers: { ...headers, 'Range-Unit': 'items', Range: `${from}-${from + PAGE - 1}` },
+    });
+    if (!resp.ok) throw new Error(`查询失败: ${resp.status} ${await resp.text()}`);
+    const page = (await resp.json()) as unknown[];
+    rows.push(...page);
+    if (page.length < PAGE) break;
+    from += PAGE;
+  }
+  return rows;
 }
 
 async function aggregateData(
@@ -154,17 +189,14 @@ async function aggregateData(
   };
 
   const capturedFilter = scope.isDemo ? 'user_id=is.null' : `user_id=eq.${encodeURIComponent(scope.scopeId)}`;
-  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(since)}&${capturedFilter}&order=created_at.desc&limit=100`;
-  const capturedResp = await fetch(capturedUrl, { headers });
-  const captured: CapturedRow[] = capturedResp.ok ? (await capturedResp.json()) as CapturedRow[] : [];
+  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(since)}&${capturedFilter}&order=created_at.desc`;
+  const captured: CapturedRow[] = (await fetchAllRows(capturedUrl, headers)) as CapturedRow[];
 
-  const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=100`;
-  const nodesResp = await fetch(nodesUrl, { headers });
-  const nodes: NodeRow[] = nodesResp.ok ? (await nodesResp.json()) as NodeRow[] : [];
+  const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc`;
+  const nodes: NodeRow[] = (await fetchAllRows(nodesUrl, headers)) as NodeRow[];
 
-  const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,source,target,relation_type,evidence_captured_ids,created_at,source_node:knowledge_nodes!knowledge_links_source_fkey(name),target_node:knowledge_nodes!knowledge_links_target_fkey(name)&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=200`;
-  const linksResp = await fetch(linksUrl, { headers });
-  const rawLinks: LinkRow[] = linksResp.ok ? (await linksResp.json()) as LinkRow[] : [];
+  const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,source,target,relation_type,evidence_captured_ids,created_at,source_node:knowledge_nodes!knowledge_links_source_fkey(name),target_node:knowledge_nodes!knowledge_links_target_fkey(name)&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc`;
+  const rawLinks: LinkRow[] = (await fetchAllRows(linksUrl, headers)) as LinkRow[];
 
   const scopeNodeIds = new Set(nodes.map((n) => n.id));
   const scopeLinks = rawLinks.filter(
@@ -195,9 +227,10 @@ async function aggregateData(
     .sort((a, b) => b.connectCount - a.connectCount)
     .slice(0, 5);
 
+
   // 代表性摘录：排除噪声捕获，取有实质内容的，选前3条
   const excerpts = captured
-    .filter((c) => !isNoiseCapture(c.title, c.summary, c.content))
+    .filter((c) => !isNoiseCapture(c.title, c.summary, c.content, c.tags))
     .filter((c) => c.summary || c.content)
     .slice(0, 3)
     .map((c) => {
@@ -213,7 +246,7 @@ async function aggregateData(
     newLinkCount: scopeLinks.length,
     tagFreq,
     capturedList: captured
-      .filter((c) => !isNoiseCapture(c.title, c.summary, c.content))
+    .filter((c) => !isNoiseCapture(c.title, c.summary, c.content, c.tags))
       .map((c) => ({
         id: c.id,
         title: c.title,
@@ -247,6 +280,12 @@ async function aggregateData(
       })),
     centralNodes,
     excerpts,
+    graphNodes: nodes.filter((n) => !isTrivialNodeName(n.name)),
+    graphLinks: scopeLinks.filter((l) => {
+      const fromName = l.source_node?.name || '';
+      const toName = l.target_node?.name || '';
+      return !isTrivialNodeName(fromName) && !isTrivialNodeName(toName);
+    }),
   };
 }
 
@@ -377,17 +416,14 @@ async function fetchPreviousPeriod(
   };
 
   const capturedFilter = scope.isDemo ? 'user_id=is.null' : `user_id=eq.${encodeURIComponent(scope.scopeId)}`;
-  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&${capturedFilter}&order=created_at.desc&limit=100`;
-  const capturedResp = await fetch(capturedUrl, { headers });
-  const captured: CapturedRow[] = capturedResp.ok ? (await capturedResp.json()) as CapturedRow[] : [];
+  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&${capturedFilter}&order=created_at.desc`;
+  const captured: CapturedRow[] = (await fetchAllRows(capturedUrl, headers)) as CapturedRow[];
 
-  const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&order=created_at.desc&limit=100`;
-  const nodesResp = await fetch(nodesUrl, { headers });
-  const nodes: NodeRow[] = nodesResp.ok ? (await nodesResp.json()) as NodeRow[] : [];
+  const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&order=created_at.desc`;
+  const nodes: NodeRow[] = (await fetchAllRows(nodesUrl, headers)) as NodeRow[];
 
-  const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,source,target,relation_type,evidence_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&order=created_at.desc&limit=200`;
-  const linksResp = await fetch(linksUrl, { headers });
-  const rawLinks: LinkRow[] = linksResp.ok ? (await linksResp.json()) as LinkRow[] : [];
+  const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,source,target,relation_type,evidence_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(prevSince)}&created_at=lt.${encodeURIComponent(prevUntil)}&order=created_at.desc`;
+  const rawLinks: LinkRow[] = (await fetchAllRows(linksUrl, headers)) as LinkRow[];
 
   const prevNodeIds = new Set(nodes.map((n) => n.id));
   const prevLinks = rawLinks.filter(
@@ -416,6 +452,8 @@ async function fetchPreviousPeriod(
     linkList: [],
     centralNodes: [],
     excerpts: [],
+    graphNodes: [],
+    graphLinks: [],
   };
 }
 
@@ -435,6 +473,7 @@ function buildNarrative(
   agg: AggregatedData,
   period: string,
   themeDirections: Map<string, ThemeTrend>,
+  communityBlocks: CommunityBlock[],
 ): string {
   const periodText = period === '7d' ? '这一周' : '这一个月';
   if (agg.capturedCount === 0) {
@@ -479,6 +518,67 @@ function buildNarrative(
   if (agg.centralNodes.length > 0) {
     parts.push(`当前知识网络的核心是「${agg.centralNodes[0].name}」，它串起了 ${agg.centralNodes[0].connectCount} 条记录。`);
   }
+  // P2 社区演化：说出"出现了几个主题簇，哪个在扩张/收缩"
+  if (communityBlocks.length > 0) {
+    const growing = communityBlocks.filter((c) => c.evolution === 'growing');
+    const shrinking = communityBlocks.filter((c) => c.evolution === 'shrinking');
+    const evoBits: string[] = [];
+    if (communityBlocks.length === 1) {
+      const c = communityBlocks[0];
+      evoBits.push(`知识图谱呈现出 ${c.nodeCount} 个节点构成的主题簇「${c.name}」${c.evolution === 'growing' ? `，正在扩张（近窗新增 ${c.recentNodes} 个节点、${c.recentCaptures} 条记录关联）` : c.evolution === 'shrinking' ? '，正在收缩' : ''}`);
+    } else {
+      evoBits.push(`知识图谱呈现出 ${communityBlocks.length} 个主题簇：${communityBlocks.map((c) => `「${c.name}」`).join('、')}`);
+      if (growing.length > 0) {
+        const g = growing[0];
+        evoBits.push(`其中「${g.name}」在扩张（近窗新增 ${g.recentNodes} 个节点、${g.recentCaptures} 条记录关联）`);
+      }
+      if (shrinking.length > 0) {
+        evoBits.push(`而「${shrinking[0].name}」在收缩（近窗没有新增节点）`);
+      }
+    }
+    parts.push(evoBits.join('；') + '。');
+  }
+
+  // 综合：生活/工作模式洞察（数据模式 → 供 LLM 润色成"对人的洞察"，而非统计罗列）
+  const lifeInsights: string[] = [];
+  // 投入最集中（结合 tagFreq 最高 + 节点来源多）
+  if (agg.capturedCount > 0 && agg.tagFreq.size > 0) {
+    const topC = [...agg.tagFreq.entries()].sort((a, b) => b[1] - a[1])[0];
+    lifeInsights.push(`你最近的精力主要在「${topC[0]}」（${topC[1]} 条记录），这很可能当前你最上心的一件事`);
+  }
+  // 明显趋势：什么在明显上升/下降——解读为生活重心的迁移
+  const dirs = [...themeDirections.values()].filter((t) => t.recent >= 2);
+  if (dirs.length > 0) {
+    const rising = dirs.filter((t) => t.direction === 'up' || t.direction === 'new').sort((a, b) => b.recent - a.recent)[0];
+    const falling = dirs.filter((t) => t.direction === 'down').sort((a, b) => b.older - a.older)[0];
+    if (rising) lifeInsights.push(`「${rising.name}」在最近明显升温（近窗 ${rising.recent} 次）——可能是你正在投入的新方向，或生活阶段的转变`);
+    if (falling) lifeInsights.push(`而「${falling.name}」热度在下降，可能是你渐渐放下、或告一段落的事`);
+  }
+  // 主题簇交织：不止一个块 → 生活同时铺开几条线
+  if (communityBlocks.length >= 2) {
+    lifeInsights.push(`你的内容同时铺在 ${communityBlocks.length} 条线上（${communityBlocks.slice(0, 3).map((c) => `「${c.name}」`).join('、')}）——可能你在几个领域并行推进`);
+  }
+  // 核心节点：反复出现、深挖的概念
+  if (agg.centralNodes.length > 0) {
+    lifeInsights.push(`「${agg.centralNodes[0].name}」是你目前最深入的一个想法（关联 ${agg.centralNodes[0].connectCount} 条内容）`);
+  }
+  // 投入深度预测（公共模块）：记录数 vs 关联度 → 哪些"只记没思考"（浅），哪些"真在深入"（深）
+  const depth = computeDepthProfile(
+    agg.nodeList.map((n) => ({ name: n.name, sourceCount: n.sourceCount })),
+    agg.linkList.map((l) => ({ source: l.from, target: l.to })),
+  );
+  if (depth.shallow[0]) lifeInsights.push(`「${depth.shallow[0].name}」你记了 ${depth.shallow[0].sourceCount} 次，但图里还没和任何东西连起来——可能只是记录、还没真正想明白，建议给它找一个连接点或补一段自己的思考`);
+  if (depth.deep[0]) lifeInsights.push(`「${depth.deep[0].name}」是枢纽（连着 ${depth.deep[0].degree} 个概念），你已经把它和很多想法串起来了——这是你思考最深的领域，适合往"产出或整合"推进`);
+  // 隐含关联预测（公共模块）：公共邻居重叠 → 你还没意识到的深度关联
+  const implicit = findImplicitPairs(
+    agg.nodeList.map((n) => n.name),
+    agg.linkList.map((l) => ({ source: l.from, target: l.to })),
+    { maxPairs: 1 },
+  );
+  if (implicit[0]) lifeInsights.push(`「${implicit[0].a}」和「${implicit[0].b}」连着一群相同的概念，但你没有把它们直接关联——它们很可能在你心里同属一件事，值得主动连起来想想`);
+  if (lifeInsights.length > 0) {
+    parts.push(`综合看：${lifeInsights.join('；')}。`);
+  }
 
   return parts.join(' ');
 }
@@ -488,6 +588,7 @@ function buildDeterministicResponse(
   period: string,
   trends: TrendItem[],
   themeDirections: Map<string, ThemeTrend>,
+  communityBlocks: CommunityBlock[],
 ) {
   const sortedTags = [...agg.tagFreq.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -541,8 +642,8 @@ function buildDeterministicResponse(
   for (const t of risingThemes) {
     nextActions.push(
       t.direction === 'new'
-        ? `「${t.name}」是最近新出现的主题（${t.recent} 次）——花 10 分钟回顾这几条记录，给它们补上标签并连接相关节点，让这个新领域成型`
-        : `「${t.name}」在升温（本期 ${t.recent} 次 vs 上期 ${t.older} 次），它很可能是你当前生活的重心——把相关记录串成一条线索，找出背后的原因`,
+        ? `「${t.name}」是最近新出现的关注点（${t.recent} 次）——它可能是你生活里新冒出的东西，值得想想你想不想深入，还是只是随手记下`
+        : `「${t.name}」最近明显升温（本期 ${t.recent} 次 vs 上期 ${t.older} 次），很可能是你当前的精力所在——试着把它讲成一条线，看看自己为什么花时间在这`,
     );
   }
 
@@ -559,9 +660,9 @@ function buildDeterministicResponse(
     const top = agg.centralNodes[0];
     const topTags = [...agg.tagFreq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
     if (topTags.length > 0) {
-      nextActions.push(`核心节点「${top.name}」关联了 ${top.connectCount} 条捕获，试着按 ${topTags.map(([n]) => `「${n}」`).join('、')} 等标签重新分类，可能会发现新的关联`);
+      nextActions.push(`「${top.name}」是你目前想得最多的概念（关联 ${top.connectCount} 条）——回看这些内容，你很可能在「${topTags.map(([n]) => `「${n}」`).join('、')}」上有自己未成型的看法，值得整理出来`);
     } else {
-      nextActions.push(`核心节点「${top.name}」关联了 ${top.connectCount} 条捕获，回顾这些内容看看它们之间有什么共同线索`);
+      nextActions.push(`「${top.name}」是你目前想得最多的概念——回看这些记录，看看你在这个想法上已经积累了哪些东西`);
     }
   }
 
@@ -574,14 +675,22 @@ function buildDeterministicResponse(
   return {
     ok: true,
     period,
-    narrative: buildNarrative(agg, period, themeDirections),
+    narrative: buildNarrative(agg, period, themeDirections, communityBlocks),
     themes,
     importantNodes,
     newConnections,
     nextActions,
     trends,
     themeTrends: pickThemeTrends(themeDirections),
+    communities: communityBlocks.map((c) => ({
+      name: c.name,
+      nodeCount: c.nodeCount,
+      capturedCount: c.capturedCount,
+      evolution: c.evolution,
+      summary: c.summary,
+    })),
     highlights: agg.excerpts,
+    weeklyTimeline: buildWeeklyTimeline(agg, period),
     stats: {
       capturedCount: agg.capturedCount,
       newNodeCount: agg.newNodeCount,
@@ -590,17 +699,78 @@ function buildDeterministicResponse(
   };
 }
 
+/**
+ * P3 时序分段：30d 按周切 4 段（第1周=最近7天 … 第4周=22-28天前），
+ * 每段输出确定性骨架（高频标签+次数），供 LLM 综合成"第1周→第4周变化弧线"。
+ * 7d 返回 null（窗口太短不值得分段）。
+ */
+function buildWeeklyTimeline(agg: AggregatedData, period: string): string | null {
+  if (period !== '30d') return null;
+  const now = Date.now();
+  const WEEK_MS = 7 * 24 * 3600 * 1000;
+  const rows: string[] = [];
+
+  for (let w = 0; w < 4; w += 1) {
+    const end = now - w * WEEK_MS;
+    const start = end - WEEK_MS;
+    const weekCaptured = agg.capturedList.filter((c) => {
+      const t = new Date(c.created_at).getTime();
+      return Number.isFinite(t) && t >= start && t < end;
+    });
+    const freq = tagFrequency(
+      weekCaptured.map((c) => ({ ...c, tags: Array.isArray(c.tags) ? c.tags : [] })),
+    );
+    const top = [...freq.entries()]
+      .filter(([tag]) => !isTrivialNodeName(tag))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+    const label = w === 0 ? '最近一周' : `往前第${w + 1}周`;
+    rows.push(`- ${label}（${weekCaptured.length} 条记录）：${top.length ? top.map(([t, c]) => `${t}(${c}次)`).join('、') : '无明确主题'}`);
+  }
+
+  return rows.join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // LLM
 // ---------------------------------------------------------------------------
 
-function formatContextForLLM(agg: AggregatedData, trends: TrendItem[], themeDirections: Map<string, ThemeTrend>): string {
+function formatContextForLLM(
+  agg: AggregatedData,
+  trends: TrendItem[],
+  themeDirections: Map<string, ThemeTrend>,
+  period: string,
+  communityBlocks: CommunityBlock[],
+): string {
   const parts: string[] = [];
 
-  // 叙事上下文
-  parts.push(`你是一位知识管理教练。用户的近期数据如下，请生成一段有深度的叙事式总结，帮助用户"认清自己"并指导下一步行动。`);
+  // 确定性骨架先行：LLM 只做"骨架的连贯化与证据填充"，禁止引入骨架之外的新事实
+  parts.push(`你是一位知识管理教练。下面是系统从用户数据中计算出的【确定性骨架】。你的工作：把骨架润色成生动、连贯、有洞察的叙事式总结——只允许优化措辞、补充过渡语，禁止新增骨架中不存在的事实、数字、因果、主题或关联。`);
+  parts.push(`\n## 确定性骨架（唯一事实来源，禁止改写其数字与断言）`);
+  parts.push(buildNarrative(agg, period, themeDirections, communityBlocks));
 
-  parts.push(`## 统计数据`);
+  // 主题方向明细（骨架的组成部分：升温3 + 新生3 + 降温4，数字不可改写）
+  const dirThemes = pickThemeTrends(themeDirections);
+  if (dirThemes.length > 0) {
+    parts.push(`\n## 主题方向明细（骨架的一部分，数字不可改写）`);
+    parts.push(dirThemes.map((t) => `- ${t.name}（${t.direction}）：${t.detail}`).join('\n'));
+  }
+
+  // P2 社区摘要：每个主题簇一句话，供 LLM 综合"社区演化"
+  if (communityBlocks.length > 0) {
+    parts.push(`\n## 主题簇（社区检测，骨架的一部分）`);
+    parts.push(communityBlocks.map((c) => `- ${c.summary}`).join('\n'));
+  }
+
+  // P3 时序分段：30d 按周切 4 段，供 LLM 写出"第1周→第4周变化弧线"
+  const weekly = buildWeeklyTimeline(agg, period);
+  if (weekly) {
+    parts.push(`\n## 每周变化（骨架的一部分，数字不可改写）`);
+    parts.push(weekly);
+  }
+
+  // 统计数据
+  parts.push(`\n## 统计数据`);
   parts.push(`- 新捕获：${agg.capturedCount} 条`);
   parts.push(`- 新知识节点：${agg.newNodeCount} 个`);
   parts.push(`- 新知识关系：${agg.newLinkCount} 条`);
@@ -610,16 +780,6 @@ function formatContextForLLM(agg: AggregatedData, trends: TrendItem[], themeDire
     .slice(0, 8);
   if (sortedTags.length > 0) {
     parts.push(`- 高频标签：${sortedTags.map(([t, c]) => `${t}(${c}次)`).join('、')}`);
-  }
-
-  // 主题方向（确定性信号，防止 LLM 只写它自己注意到的主题）
-  const dirThemes = [...themeDirections.values()];
-  const upNew = dirThemes.filter((t) => t.direction === 'up' || t.direction === 'new').slice(0, 4);
-  const down = dirThemes.filter((t) => t.direction === 'down').slice(0, 4);
-  if (upNew.length > 0 || down.length > 0) {
-    parts.push(`\n## 主题方向（数据信号，必须体现在总结里）`);
-    if (upNew.length > 0) parts.push(`- 升温/新生：${upNew.map((t) => `「${t.name}」近7天${t.recent}次 vs 更早${t.older}次`).join('；')}`);
-    if (down.length > 0) parts.push(`- 降温：${down.map((t) => `「${t.name}」近7天${t.recent}次 vs 更早${t.older}次`).join('；')}`);
   }
 
   // 核心节点
@@ -677,11 +837,11 @@ async function callChatCompletion(
         {
           role: 'system',
           content: `你是知识管理教练。根据用户近期数据，生成深度结构化总结。只返回 JSON，不要 Markdown。
-【最高优先级·严禁编造数据】只能原样引用上下文中明确出现的数字短语（如"记录数量增长 900%"），禁止创造、改写或换算任何数字、百分比、倍数与时间跨度（如"连续三个月""下降32%""飙升5倍"）；需要表达量级时用定性词（"明显上升""大幅减少"）。所有因果断言必须能被捕获记录直接支撑。这是硬性要求，违反即视为失败。
+【最高优先级·严禁编造数据】上下文顶部给出了【确定性骨架】——这是系统从用户数据中计算出的唯一事实来源。你只能原样引用骨架中明确出现的数字短语（如"记录数量增长 900%"）与断言，禁止创造、改写或换算任何数字、百分比、倍数与时间跨度（如"连续三个月""下降32%""飙升5倍"）；禁止引入骨架之外的新事实、新主题、新因果。需要表达量级时用定性词（"明显上升""大幅减少"）。所有因果断言必须能被骨架或捕获记录直接支撑。这是硬性要求，违反即视为失败。
 
 JSON 格式（每字段最多 5 项）：
 {
-  "narrative": "一段连贯的叙事式总结（100-200字），分析用户这段时间在关注什么、什么在变化、有什么值得注意的模式。不要罗列数据，要讲故事、找关联、给出洞察。用第二人称"你"。",
+  "narrative": "一段连贯的叙事式总结（100-200字），把确定性骨架润色成有温度、有洞察的叙述。分析用户这段时间在关注什么、什么在变化、有什么值得注意的模式。不要罗列数据，要讲故事、找关联、给出洞察。用第二人称"你"。",
   "themes": [{"name": "主题名", "count": 数字, "insight": "关于这个主题的一两句深度分析"}],
   "importantNodes": [{"name": "节点名", "kind": "类型", "reason": "为什么重要（结合用户行为和趋势）"}],
   "newConnections": [{"from": "A", "to": "B", "relationType": "关系类型", "significance": "这个关联对用户的意义"}],
@@ -689,7 +849,8 @@ JSON 格式（每字段最多 5 项）：
 }
 
 要求：
-- narrative 要生动、有温度、有洞察，像一位了解你的教练在跟你对话
+- narrative 要生动、有温度、有洞察，像一位了解你的教练在跟你对话；但必须忠实于确定性骨架，骨架没有说到的数据点一律不要出现
+- 【时间推进】如果上下文包含【每周变化】章节，narrative 必须体现时间推进弧线（如"第1周…到第4周…"），明确各周关注点如何迁移，但只使用骨架中的周数据
 - themes 的 insight 不要只说"这是高频主题"，要分析该主题的出现模式、与其它主题的关联
 - nextActions 要具体可执行（如"本周尝试记录每次加班后的睡眠时长，检验你怀疑的因果关系"），不要空话（如"继续努力"）
 - 【重要】忽略以下无意义内容：日常琐碎（吃饭、睡觉、通勤）、具体时刻（22点、00:40）、泛化概念（计划、工作、学习、生活）、泛称地点（家、公司、食堂）。这些不会产生有价值的洞察
@@ -704,6 +865,70 @@ JSON 格式（每字段最多 5 项）：
   const text = await resp.text();
   const json = safeJsonParse(text);
   return { ok: resp.ok, status: resp.status, text, json };
+}
+
+/**
+ * P2：为一个主题簇生成一句话摘要（LLM 小调用，失败返回 null 由调用方降级）。
+ * 输入=簇内节点名 + 关联捕获标题；输出≤60字的一句话。
+ */
+async function summarizeCommunity(
+  c: Community,
+  agg: AggregatedData,
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+): Promise<string | null> {
+  const nodeNameById = new Map(agg.graphNodes.map((n) => [n.id, n.name]));
+  const nodeNames = c.nodeIds
+    .map((id) => nodeNameById.get(id))
+    .filter((x): x is string => Boolean(x))
+    .slice(0, 12);
+  const captureTitleById = new Map(agg.capturedList.map((x) => [x.id, x.title]));
+  const captureTitles = [...c.capturedIds]
+    .map((id) => captureTitleById.get(id))
+    .filter((x): x is string => Boolean(x))
+    .slice(0, 6);
+
+  const prompt =
+    `你是一位知识管理教练。用户的近期知识图谱里有一个主题簇（一组紧密关联的知识节点）。` +
+    `请用不超过 60 字的一句话概括这个主题簇在说什么、对用户意味着什么，不要罗列节点名。只返回 JSON：{"summary":"..."}\n\n` +
+    `知识节点：${nodeNames.join('、')}\n` +
+    `相关记录：${captureTitles.join('、') || '(无)'}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const resp = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.3,
+        max_tokens: 200,
+        messages: [
+          { role: 'system', content: '你是一位知识管理教练。只返回严格 JSON，不要 Markdown。' },
+          { role: 'user', content: prompt },
+        ],
+      }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) return null;
+    const body = safeJsonParse(await resp.text());
+    const choices = body && typeof body === 'object' && 'choices' in body ? (body as Record<string, unknown>).choices : null;
+    const msg = Array.isArray(choices) ? (choices[0] as Record<string, unknown> | undefined)?.message : null;
+    const text = msg && typeof msg === 'object' && 'content' in msg ? (msg as Record<string, unknown>).content : null;
+    if (typeof text !== 'string') return null;
+    const parsed = normalizeContentToJson(text);
+    const summary = parsed && typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+    return summary.length > 0 ? summary : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -755,22 +980,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 无数据
     if (agg.capturedCount === 0 && agg.newNodeCount === 0) {
-      const empty = buildDeterministicResponse(agg, period, trends, themeDirections);
+      const empty = buildDeterministicResponse(agg, period, trends, themeDirections, []);
       res.status(200).json(empty);
       return;
     }
 
     // 尝试 LLM
     const apiKey = process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
+    const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
+    const preferredModel = process.env.MINIMAX_MODEL || 'abab6.5s-chat';
+
+    // P2 社区检测：把周期内图谱切成主题簇，供社区摘要与叙事使用
+    const communities = detectCommunities(agg.graphNodes, agg.graphLinks, {
+      recentBoundaryDays: Math.ceil(days / 2),
+    });
+    // 社区摘要：LLM 小调用（并行，失败降级确定性描述）
+    const communityBlocks: CommunityBlock[] = await Promise.all(
+      communities.slice(0, 4).map(async (c) => {
+        const llm = apiKey
+          ? await summarizeCommunity(c, agg, apiKey, baseUrl, preferredModel)
+          : null;
+        return {
+          name: c.name,
+          nodeCount: c.nodeCount,
+          capturedCount: c.capturedIds.size,
+          recentNodes: c.recentNodes,
+          recentCaptures: c.recentCaptures,
+          evolution: evolutionOf(c),
+          summary: llm || describeCommunity(c),
+        };
+      }),
+    );
+
     if (!apiKey) {
-      const fallback = buildDeterministicResponse(agg, period, trends, themeDirections);
+      const fallback = buildDeterministicResponse(agg, period, trends, themeDirections, communityBlocks);
       fallback.nextActions.push('LLM 不可用，当前为统计摘要');
       res.status(200).json(fallback);
       return;
     }
-
-    const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
-    const preferredModel = process.env.MINIMAX_MODEL || 'abab6.5s-chat';
 
     const candidates = [
       preferredModel,
@@ -784,7 +1031,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `${stripTrailingV1(baseUrl).replace(/\/$/, '')}/chat/completions`,
     ];
 
-    const context = formatContextForLLM(agg, trends, themeDirections);
+    const context = formatContextForLLM(agg, trends, themeDirections, period, communityBlocks);
 
     for (const model of candidates) {
       let r: Awaited<ReturnType<typeof callChatCompletion>> | null = null;
@@ -860,14 +1107,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         res.status(200).json({
           ok: true,
           period,
-          narrative: narrative || buildNarrative(agg, period, themeDirections),
+          narrative: narrative || buildNarrative(agg, period, themeDirections, communityBlocks),
           themes: themes.slice(0, 5),
           importantNodes: importantNodes.slice(0, 5),
           newConnections: newConnections.slice(0, 5),
           themeTrends: pickThemeTrends(themeDirections),
+          communities: communityBlocks.map((c) => ({
+            name: c.name,
+            nodeCount: c.nodeCount,
+            capturedCount: c.capturedCount,
+            evolution: c.evolution,
+            summary: c.summary,
+          })),
           nextActions: nextActions.slice(0, 5),
           trends,
           highlights: agg.excerpts,
+          weeklyTimeline: buildWeeklyTimeline(agg, period),
           stats: {
             capturedCount: agg.capturedCount,
             newNodeCount: agg.newNodeCount,
@@ -879,7 +1134,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // LLM 全部失败 → 确定性降级
-    const fallback = buildDeterministicResponse(agg, period, trends, themeDirections);
+    const fallback = buildDeterministicResponse(agg, period, trends, themeDirections, communityBlocks);
     res.status(200).json(fallback);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';

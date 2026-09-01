@@ -8,7 +8,8 @@ import { retryCapturedItem } from '../../lib/process';
 
 interface InfoCard {
   id: string;
-  type: 'text' | 'photo' | 'audio' | 'import';
+  /** 'note' 为 O1 前的存量文字记录类型，与 'text' 同义展示 */
+  type: 'text' | 'photo' | 'audio' | 'import' | 'note';
   title: string;
   content: string;
   timestamp: string;
@@ -21,6 +22,9 @@ interface InfoCard {
   processing_error?: string;
   /** 原始 ISO 时间戳, 供增量合并排序; 展示仍用 timestamp */
   created_at_raw?: string;
+  /** O3: 文件生命周期 —— 存储对象路径与文件名；旧数据无此列 */
+  storage_path?: string | null;
+  file_name?: string | null;
 }
 
 type DataDestination = 'capture' | 'knowledge' | 'item-detail';
@@ -31,7 +35,7 @@ interface DataPageProps {
 
 
 function ProcessingBadge({ item, onRetry }: { item: InfoCard; onRetry: (item: InfoCard) => void }) {
-  const badgeBase = 'flex-none inline-flex items-center gap-1 px-1.5 py-0.5 text-xs';
+  const badgeBase = 'flex-none inline-flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-full';
   // O1: 聚合子状态判断整体; 任一子步骤失败即失败, 避免被部分成功掩盖
   const statuses = [item.graph_status, item.embedding_status].filter(Boolean);
   const anyFailed = item.processing_status === 'failed' || statuses.some((s) => s === 'failed');
@@ -47,14 +51,13 @@ function ProcessingBadge({ item, onRetry }: { item: InfoCard; onRetry: (item: In
     // 子步骤全 completed 但整体卡 failed(历史死锁行)→ 提供"恢复"入口, 而非无按钮
     const recoverOnly = !graphActionable && !embedActionable;
     return (
-      <span className={`${badgeBase} bg-red-50 text-red-700`} style={{ borderRadius: '4px' }} title={item.processing_error || ''}>
+      <span className={`${badgeBase} bg-danger-soft text-danger`} title={item.processing_error || ''}>
         <AlertTriangle className="w-3 h-3" />
         处理失败
         {showAction && (
           <button
             onClick={(e) => { e.stopPropagation(); onRetry(item); }}
-            className="px-1 py-0.5 bg-red-600 text-white text-[10px] hover:bg-red-700 transition-colors"
-            style={{ borderRadius: '3px' }}
+            className="px-1 py-0.5 bg-danger text-white text-[10px] hover:bg-danger/90 transition-colors rounded-full"
           >
             重试
           </button>
@@ -62,8 +65,7 @@ function ProcessingBadge({ item, onRetry }: { item: InfoCard; onRetry: (item: In
         {!showAction && recoverOnly && (
           <button
             onClick={(e) => { e.stopPropagation(); onRetry(item); }}
-            className="px-1 py-0.5 bg-amber-600 text-white text-[10px] hover:bg-amber-700 transition-colors"
-            style={{ borderRadius: '3px' }}
+            className="px-1 py-0.5 bg-warning text-white text-[10px] hover:bg-warning/90 transition-colors rounded-full"
           >
             恢复
           </button>
@@ -73,7 +75,7 @@ function ProcessingBadge({ item, onRetry }: { item: InfoCard; onRetry: (item: In
   }
   if (anyProcessing) {
     return (
-      <span className={`${badgeBase} bg-blue-50 text-blue-700`} style={{ borderRadius: '4px' }}>
+      <span className={`${badgeBase} bg-brand-soft text-brand-strong`}>
         <Loader2 className="w-3 h-3 animate-spin" />
         处理中
       </span>
@@ -81,19 +83,18 @@ function ProcessingBadge({ item, onRetry }: { item: InfoCard; onRetry: (item: In
   }
   if (allDone) {
     return (
-      <span className={`${badgeBase} bg-green-50 text-green-700`} style={{ borderRadius: '4px' }}>
+      <span className={`${badgeBase} bg-success-soft text-success`}>
         <Check className="w-3 h-3" />
         已完成
       </span>
     );
   }
   return (
-    <span className={`${badgeBase} bg-gray-100 text-gray-500`} style={{ borderRadius: '4px' }}>
+    <span className={`${badgeBase} bg-gray-100 text-gray-500`}>
       待处理
       <button
         onClick={(e) => { e.stopPropagation(); onRetry(item); }}
-        className="px-1 py-0.5 bg-gray-600 text-white text-[10px] hover:bg-gray-700 transition-colors"
-        style={{ borderRadius: '3px' }}
+        className="px-1 py-0.5 bg-gray-600 text-white text-[10px] hover:bg-gray-700 transition-colors rounded-full"
       >
         处理
       </button>
@@ -102,10 +103,12 @@ function ProcessingBadge({ item, onRetry }: { item: InfoCard; onRetry: (item: In
 }
 const typeIcons = {
   text: <FileText className="w-5 h-5 text-blue-500" />,
+  note: <FileText className="w-5 h-5 text-blue-500" />,
   photo: <ImageIcon className="w-5 h-5 text-green-500" />,
   audio: <Mic className="w-5 h-5 text-purple-500" />,
   import: <File className="w-5 h-5 text-orange-500" />
 };
+const TEXT_LIKE_TYPES: Array<InfoCard['type']> = ['text', 'note'];
 
 // 与 ProcessingBadge.showAction 同一判定; 处理中不视为可补做(正在跑就不该有补做入口)
 function isActionable(item: InfoCard): boolean {
@@ -123,18 +126,25 @@ function isActionable(item: InfoCard): boolean {
 }
 type InfoRow = Record<string, any>;
 
-// 状态修复(全量与增量共用): 处理超时 >3min -> failed; 子步骤全 completed 但主状态仍 processing -> completed
-const reconcileStatuses = (rows: InfoRow[]): Set<string> => {
-  const staleGraphProcessing = rows.filter((i) => {
-    if (i.processing_status !== 'processing' || i.graph_status !== 'processing') return false;
+// 状态修复(全量与增量共用): 处理中但子步骤未全部 completed 且超时(>3min) -> failed;
+// 子步骤全 completed 但主状态仍 processing -> completed
+const reconcileStatuses = (rows: InfoRow[]): { completed: Set<string>; failed: Set<string> } => {
+  // 卡住的行: processing 但未完成, 且 3 分钟无推进(processed_at 为空时用 created_at)。
+  // 覆盖两类: 子步骤 processing 超时(旧规则) 与 子步骤从未开始(pending, 如进程中断/恢复数据)。
+  // 任一子步骤为 processing = 正在推进(重试/后台任务进行中), 不判定卡死, 避免中途误标失败
+  const staleProcessing = rows.filter((i) => {
+    if (i.processing_status !== 'processing') return false;
+    if (i.graph_status === 'processing' || i.embedding_status === 'processing') return false;
+    if (i.graph_status === 'completed' && i.embedding_status === 'completed') return false;
     const t = new Date(i.processed_at || i.created_at).getTime();
     return Number.isFinite(t) && Date.now() - t > 3 * 60 * 1000;
   });
-  if (staleGraphProcessing.length > 0) {
+  const staleFailedIds = new Set(staleProcessing.map((i) => i.id));
+  if (staleFailedIds.size > 0) {
     supabase
       .from('captured_info')
-      .update({ graph_status: 'failed', processing_status: 'failed', processing_error: 'graph: 处理超时(>3分钟), 请重试' })
-      .in('id', staleGraphProcessing.map((i) => i.id))
+      .update({ graph_status: 'failed', processing_status: 'failed', processing_error: 'graph: 处理超时(>3分钟未推进), 请重试' })
+      .in('id', Array.from(staleFailedIds))
       .then(() => {});
   }
   const staleCompleted = rows.filter((i) => {
@@ -149,11 +159,11 @@ const reconcileStatuses = (rows: InfoRow[]): Set<string> => {
       .in('id', Array.from(staleCompletedIds))
       .then(() => {});
   }
-  return staleCompletedIds;
+  return { completed: staleCompletedIds, failed: staleFailedIds };
 };
 
 // 行 -> 卡片映射, 全量/增量路径共用, 保证两种路径展示一致
-const formatInfoRow = (item: InfoRow, staleCompletedIds: Set<string>): InfoCard => ({
+const formatInfoRow = (item: InfoRow, reconciled: { completed: Set<string>; failed: Set<string> }): InfoCard => ({
   id: item.id,
   type: item.type as InfoCard['type'],
   title: item.title,
@@ -162,11 +172,18 @@ const formatInfoRow = (item: InfoRow, staleCompletedIds: Set<string>): InfoCard 
   created_at_raw: item.created_at || undefined,
   tags: item.tags || [],
   is_pinned: item.is_pinned || false,
-  processing_status: staleCompletedIds.has(item.id) ? 'completed' : (item.processing_status || undefined),
+  processing_status: reconciled.failed.has(item.id)
+    ? 'failed'
+    : reconciled.completed.has(item.id)
+      ? 'completed'
+      : (item.processing_status || undefined),
   embedding_status: item.embedding_status || undefined,
   graph_status: item.graph_status || undefined,
   processing_error: item.processing_error || undefined,
+  storage_path: item.storage_path || null,
+  file_name: item.file_name || null,
 });
+
 
 const maxCreatedAt = (rows: InfoRow[]): string | null => {
   let max: string | null = null;
@@ -196,6 +213,9 @@ interface RetryAllState {
 export function DataPage({ onNavigate }: DataPageProps) {
   const [data, setData] = useState<InfoCard[]>([]);
   const [loading, setLoading] = useState(true);
+  // O3: photo 列表缩略图 —— 按 storage_path 动态生成 signed URL，生成一次后缓存（ref 防重复请求）
+  const [photoUrlMap, setPhotoUrlMap] = useState<Record<string, string>>({});
+  const photoUrlMapRef = useRef<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState<'keyword' | 'semantic'>('keyword');
@@ -346,6 +366,31 @@ export function DataPage({ onNavigate }: DataPageProps) {
     });
   };
 
+  // O3: 为 photo 行按 storage_path 生成列表缩略图 signed URL；已有缓存的行跳过，避免轮询重复请求
+  const ensurePhotoUrls = useCallback(async (rows: InfoCard[]) => {
+    const pending = rows.filter((r) => r.type === 'photo' && r.storage_path && !photoUrlMapRef.current[r.id]);
+    if (pending.length === 0) return;
+    const entries = await Promise.all(
+      pending.map(async (r) => {
+        try {
+          const { data } = await supabase.storage.from('captured-files').createSignedUrl(r.storage_path as string, 60 * 60);
+          return data?.signedUrl ? ([r.id, data.signedUrl] as const) : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const next = { ...photoUrlMapRef.current };
+    for (const e of entries) if (e) next[e[0]] = e[1];
+    photoUrlMapRef.current = next;
+    setPhotoUrlMap(next);
+  }, []);
+
+  // 列裁剪(不含 embedding 向量列): captured_info 有 1024 维 embedding,
+  // select('*') 会把整列向量序列化(169 行 ≈ 1.4MB, 每 30s 轮询都拉),
+  // 与 KnowledgePage 的列裁剪一致, 大幅降低列表页加载体积与耗时
+  const CAPTURED_COLUMNS = 'id,type,title,content,summary,created_at,is_pinned,tags,note,processing_status,graph_status,embedding_status,processing_error,processed_at,storage_path,file_name,mime_type,file_size';
+
   const fetchData = async (showLoading = true) => {
     if (showLoading) setLoading(true);
     // 15s 超时: 直连 supabase.co 可能长时间挂起, 不能让页面停在"正在加载数据..."
@@ -354,7 +399,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
     try {
       const { data: capturedInfo, error } = await supabase
         .from('captured_info')
-        .select('*')
+        .select(CAPTURED_COLUMNS)
         .abortSignal(controller.signal)
         .order('is_pinned', { ascending: false })
         .order('created_at', { ascending: false });
@@ -362,10 +407,10 @@ export function DataPage({ onNavigate }: DataPageProps) {
       if (error) throw error;
 
       if (capturedInfo) {
-        const staleCompletedIds = reconcileStatuses(capturedInfo);
-        const formattedData: InfoCard[] = capturedInfo.map((item) => formatInfoRow(item, staleCompletedIds));
+        const reconciled = reconcileStatuses(capturedInfo);
+        const formattedData: InfoCard[] = capturedInfo.map((item) => formatInfoRow(item, reconciled));
         setData(formattedData);
-        setLoadError(null);
+        void ensurePhotoUrls(formattedData);
         lastSyncRef.current = maxCreatedAt(capturedInfo);
         // 重建观察集: 全量快照中任一状态为非空且非 completed 的行进入观察, 供增量同步捕获"完成/失败瞬间"
         // (与增量查询 or(...neq.completed) 语义一致: neq 对 NULL 不生效, 存量 NULL 行是静态的, 无需观察)
@@ -402,9 +447,9 @@ export function DataPage({ onNavigate }: DataPageProps) {
       // 1.5s 回看窗口: 水位线同一秒内新增的行不遗漏; 重复行由按 id 合并去重
       const watermarkIso = new Date(new Date(watermark).getTime() - 1500).toISOString();
       const [newRes, changedRes] = await Promise.all([
-        supabase.from('captured_info').select('*').gt('created_at', watermarkIso).abortSignal(controller.signal),
+        supabase.from('captured_info').select(CAPTURED_COLUMNS).gt('created_at', watermarkIso).abortSignal(controller.signal),
         supabase.from('captured_info')
-          .select('*')
+          .select(CAPTURED_COLUMNS)
           .or('processing_status.neq.completed,graph_status.neq.completed,embedding_status.neq.completed')
           .abortSignal(controller.signal),
       ]);
@@ -418,7 +463,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
       if (resolved.length > 0) {
         const { data: settled, error: settledError } = await supabase
           .from('captured_info')
-          .select('*')
+          .select(CAPTURED_COLUMNS)
           .in('id', resolved)
           .abortSignal(controller.signal);
         if (settledError) throw settledError;
@@ -426,8 +471,10 @@ export function DataPage({ onNavigate }: DataPageProps) {
         for (const id of resolved) watchRef.current.delete(id);
       }
       if (incoming.length > 0) {
-        const staleCompletedIds = reconcileStatuses(incoming);
-        setData((prev) => mergeByKey(prev, incoming.map((item) => formatInfoRow(item, staleCompletedIds))));
+        const reconciled = reconcileStatuses(incoming);
+        const formatted = incoming.map((item) => formatInfoRow(item, reconciled));
+        setData((prev) => mergeByKey(prev, formatted));
+        void ensurePhotoUrls(formatted);
         const max = maxCreatedAt(incoming);
         if (max && (!lastSyncRef.current || max > lastSyncRef.current)) lastSyncRef.current = max;
       }
@@ -440,10 +487,11 @@ export function DataPage({ onNavigate }: DataPageProps) {
     }
   }, []);
 
-  // 捕获页保存成功后即时增量同步, 不必等下一轮 30s 轮询
+  // 捕获页保存 / 详情页删除/编辑/置顶后即时刷新（全量：删除的行增量同步不会移除，须整表重建
+  // 以反映删除；新增/修改同样覆盖）
   useEffect(() => {
     const onDataChanged = () => {
-      void syncData();
+      void fetchData(false);
     };
     window.addEventListener('evolvmind:data-changed', onDataChanged);
     return () => window.removeEventListener('evolvmind:data-changed', onDataChanged);
@@ -499,11 +547,12 @@ export function DataPage({ onNavigate }: DataPageProps) {
     try {
       const ids = Array.from(selectedIds);
       const selectedItems = data.filter(i => selectedIds.has(i.id));
+      // O3: 优先 storage_path；旧数据回退到 content 推导
       const filePaths = selectedItems
-        .map(i => i.content)
-        .filter(url => url.startsWith('http') && url.includes('/storage/v1/object/public/captured-files/'))
-        .map(url => url.split('captured-files/')[1]?.split('?')[0])
-        .filter(Boolean);
+        .map((i) => i.storage_path || (i.content.startsWith('http') && i.content.includes('/storage/v1/object/public/captured-files/')
+          ? i.content.split('captured-files/')[1]?.split('?')[0]
+          : null))
+        .filter((p): p is string => Boolean(p));
 
       if (filePaths.length > 0) {
         await supabase.storage.from('captured-files').remove(filePaths);
@@ -537,19 +586,17 @@ export function DataPage({ onNavigate }: DataPageProps) {
               placeholder={searchMode === 'semantic' ? '语义搜索...' : '搜索信息...'}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              style={{ borderRadius: '4px' }}
+              className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent"
             />
             {isSearching && (
-              <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-blue-500 animate-spin" />
+              <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-brand animate-spin" />
             )}
           </div>
 
           <motion.button
             whileTap={{ scale: 0.95 }}
             onClick={() => setSearchMode(searchMode === 'keyword' ? 'semantic' : 'keyword')}
-            className={`w-11 h-11 border transition-colors flex items-center justify-center ${searchMode === 'semantic' ? 'bg-purple-50 border-purple-300 text-purple-600' : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-purple-300'}`}
-            style={{ borderRadius: '4px' }}
+            className={`w-11 h-11 border transition-colors flex items-center justify-center ${searchMode === 'semantic' ? 'bg-ai-soft border-ai/30 text-ai' : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-ai/40'} rounded-xl`}
             aria-label={searchMode === 'semantic' ? '切换到关键词搜索' : '切换到语义搜索'}
             title={searchMode === 'semantic' ? '语义搜索中' : '关键词搜索中'}
           >
@@ -565,8 +612,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
               }
               setIsMultiSelect(true);
             }}
-            className={`w-11 h-11 bg-gray-50 border border-gray-200 hover:border-blue-300 transition-colors flex items-center justify-center ${isMultiSelect ? 'text-blue-500' : 'text-gray-600'}`}
-            style={{ borderRadius: '4px' }}
+            className={`w-11 h-11 bg-gray-50 border border-gray-200 hover:border-brand-300 transition-colors flex items-center justify-center ${isMultiSelect ? 'text-brand' : 'text-gray-600'} rounded-xl`}
             aria-label="多选"
             title={isMultiSelect ? '退出多选' : '多选'}
           >
@@ -581,10 +627,9 @@ export function DataPage({ onNavigate }: DataPageProps) {
           <button
             onClick={() => void handleRetryAll()}
             disabled={retryAll?.running}
-            className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-medium transition-colors bg-blue-500 text-white hover:bg-blue-600 ${
+            className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-medium transition-colors bg-brand text-white hover:bg-brand-strong ${
               retryAll?.running ? 'opacity-80 cursor-not-allowed' : ''
-            }`}
-            style={{ borderRadius: '4px' }}
+            } rounded-xl shadow-card`}
           >
             {retryAll?.running ? (
               <>
@@ -609,8 +654,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
             exit={{ opacity: 0, y: -8 }}
             className="flex-none px-4 pb-3"
           >
-            <div className="bg-white border border-gray-200 px-3 py-2 flex items-center justify-between"
-              style={{ borderRadius: '4px' }}
+            <div className="bg-card border border-gray-100 px-3 py-2 flex items-center justify-between rounded-xl shadow-card"
             >
               <div className="text-sm text-gray-700">
                 已选择 <span className="font-medium text-gray-900">{selectedCount}</span> 项
@@ -620,8 +664,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
                   whileTap={{ scale: 0.95 }}
                   onClick={handleBulkPin}
                   disabled={selectedCount === 0 || isBulkActing}
-                  className="px-3 py-1.5 bg-blue-500 text-white text-xs font-medium disabled:bg-blue-300 transition-colors"
-                  style={{ borderRadius: '4px' }}
+                  className="px-3 py-1.5 bg-brand text-white text-xs font-medium disabled:bg-blue-300 transition-colors rounded-lg"
                 >
                   置顶
                 </motion.button>
@@ -629,8 +672,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
                   whileTap={{ scale: 0.95 }}
                   onClick={() => setShowBulkDeleteConfirm(true)}
                   disabled={selectedCount === 0 || isBulkActing}
-                  className="px-3 py-1.5 bg-red-500 text-white text-xs font-medium disabled:bg-red-300 transition-colors"
-                  style={{ borderRadius: '4px' }}
+                  className="px-3 py-1.5 bg-danger text-white text-xs font-medium disabled:bg-destructive/30 transition-colors rounded-lg"
                 >
                   删除
                 </motion.button>
@@ -644,7 +686,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
       <div className="flex-1 overflow-y-auto px-4 pb-20">
         {loading && !loadError ? (
           <div className="flex flex-col items-center justify-center py-12">
-            <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-2" />
+            <Loader2 className="w-8 h-8 text-brand animate-spin mb-2" />
             <p className="text-sm text-gray-500">正在加载数据...</p>
           </div>
         ) : loadError ? (
@@ -653,8 +695,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
             <p className="text-sm text-gray-600 mb-3">{loadError}</p>
             <button
               onClick={() => fetchData()}
-              className="px-4 py-2 bg-blue-600 text-white text-sm hover:bg-blue-700 transition-colors"
-              style={{ borderRadius: '4px' }}
+              className="px-4 py-2 bg-brand text-white text-sm hover:bg-brand-strong transition-colors rounded-lg"
             >
               重试
             </button>
@@ -671,11 +712,10 @@ export function DataPage({ onNavigate }: DataPageProps) {
                   }
                   onNavigate?.('item-detail', item.id);
                 }}
-                className={`bg-white border ${item.is_pinned ? 'border-blue-200' : 'border-gray-200'} p-4 cursor-pointer hover:border-blue-300 transition-colors overflow-hidden relative`}
-                style={{ borderRadius: '4px' }}
+                className={`bg-card border ${item.is_pinned ? 'border-brand-200' : 'border-gray-100'} p-4 cursor-pointer hover:border-brand-300 transition-all overflow-hidden relative rounded-xl shadow-card`}
               >
                 {item.is_pinned && (
-                  <div className="absolute top-0 right-0 p-1 bg-blue-500 rounded-bl" style={{ borderBottomLeftRadius: '4px' }}>
+                  <div className="absolute top-0 right-0 p-1 bg-brand rounded-bl-lg">
                     <Pin className="w-3 h-3 text-white fill-white" />
                   </div>
                 )}
@@ -683,14 +723,13 @@ export function DataPage({ onNavigate }: DataPageProps) {
                   {isMultiSelect && (
                     <div className="flex-none pt-1">
                       <div
-                        className={`w-5 h-5 border flex items-center justify-center ${selectedIds.has(item.id) ? 'bg-blue-500 border-blue-500' : 'border-gray-300 bg-white'}`}
-                        style={{ borderRadius: '4px' }}
+                        className={`w-5 h-5 border flex items-center justify-center ${selectedIds.has(item.id) ? 'bg-brand border-brand' : 'border-gray-300 bg-white'} rounded-md`}
                       >
                         {selectedIds.has(item.id) ? <Check className="w-3.5 h-3.5 text-white" /> : null}
                       </div>
                     </div>
                   )}
-                  <div className="w-10 h-10 bg-gray-50 flex items-center justify-center flex-none" style={{ borderRadius: '4px' }}>
+                  <div className="w-10 h-10 bg-gray-50 flex items-center justify-center flex-none rounded-xl">
                     {typeIcons[item.type as keyof typeof typeIcons]}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -698,7 +737,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
                       <h3 className="font-medium text-gray-900 truncate">{item.title}</h3>
                       <ProcessingBadge item={item} onRetry={handleRetry} />
                       {item.similarity != null && (
-                        <span className="flex-none px-1.5 py-0.5 bg-purple-100 text-purple-700 text-xs font-medium" style={{ borderRadius: '4px' }}>
+                        <span className="flex-none px-1.5 py-0.5 bg-ai-soft text-ai text-xs font-medium rounded-full">
                           {Math.round(item.similarity * 100)}%
                         </span>
                       )}
@@ -717,22 +756,21 @@ export function DataPage({ onNavigate }: DataPageProps) {
                     ) : null}
                     
                     {/* 根据类型展示预览 */}
-                    {item.type === 'photo' && (item.content.startsWith('blob:') || item.content.startsWith('http')) && (
+                    {item.type === 'photo' && (photoUrlMap[item.id] || item.content.startsWith('blob:') || item.content.startsWith('http')) && (
                       <div className="mb-2 rounded overflow-hidden border border-gray-100 max-h-32">
-                        <img src={item.content} alt="Preview" className="w-full h-auto object-cover" />
+                        <img src={photoUrlMap[item.id] || item.content} alt="Preview" className="w-full h-auto object-cover" />
                       </div>
                     )}
                     
                     <p className="text-sm text-gray-600 line-clamp-2 mb-2">
-                      {item.type === 'text' ? item.content : `[${item.type === 'photo' ? '图片' : item.type === 'audio' ? '音频' : '文件'}] ${item.content.split('/').pop()?.split('?')[0]}`}
+                      {TEXT_LIKE_TYPES.includes(item.type) ? item.content : `[${item.type === 'photo' ? '图片' : item.type === 'audio' ? '音频' : '文件'}] ${item.file_name || item.content.split('/').pop()?.split('?')[0]}`}
                     </p>
                     
                     <div className="flex items-center gap-2 flex-wrap">
                       {item.tags.map((tag, idx) => (
                         <span
                           key={idx}
-                          className="inline-block px-2 py-0.5 bg-gray-100 text-xs text-gray-600"
-                          style={{ borderRadius: '4px' }}
+                          className="inline-block px-2 py-0.5 bg-gray-100 text-xs text-gray-600 rounded-full"
                         >
                           {tag}
                         </span>
@@ -755,8 +793,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
       <motion.button
         whileTap={{ scale: 0.95 }}
         onClick={() => onNavigate?.('capture')}
-        className="absolute right-4 bottom-36 w-14 h-14 bg-blue-500 text-white shadow-lg hover:bg-blue-600 transition-colors flex items-center justify-center z-10"
-        style={{ borderRadius: '4px' }}
+        className="absolute right-4 bottom-36 w-14 h-14 bg-brand text-white shadow-float hover:brightness-110 transition-all flex items-center justify-center z-10 rounded-full"
         aria-label="捕获信息"
       >
         <Plus className="w-6 h-6" />
@@ -777,8 +814,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="relative w-full max-w-xs bg-white p-6 shadow-2xl"
-              style={{ borderRadius: '4px' }}
+              className="relative w-full max-w-xs bg-white p-6 shadow-float rounded-2xl"
             >
               <div className="flex items-center gap-2 mb-3 text-gray-900">
                 <Trash2 className="w-5 h-5 text-red-500" />
@@ -788,8 +824,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowBulkDeleteConfirm(false)}
-                  className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors"
-                  style={{ borderRadius: '4px' }}
+                  className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors rounded-lg"
                 >
                   取消
                 </button>
@@ -799,8 +834,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
                     handleBulkDelete();
                   }}
                   disabled={isBulkActing}
-                  className="flex-1 px-4 py-2.5 bg-red-500 text-white text-sm font-medium hover:bg-red-600 transition-colors"
-                  style={{ borderRadius: '4px' }}
+                  className="flex-1 px-4 py-2.5 bg-danger text-white text-sm font-medium hover:bg-danger/90 transition-colors rounded-lg"
                 >
                   确认删除
                 </button>

@@ -42,8 +42,10 @@ export interface RecommendResponse {
  */
 export async function fetchRecommendations(params: {
   dismissedIds?: string[];
+  /** 用户点击过的推荐 ID（正反馈信号，服务端 +0.5 加权） */
+  clickedIds?: string[];
 }): Promise<RecommendResponse> {
-  const { dismissedIds = [] } = params;
+  const { dismissedIds = [], clickedIds = [] } = params;
 
   try {
     const isDemo = localStorage.getItem('demo_auth') === 'true';
@@ -60,6 +62,7 @@ export async function fetchRecommendations(params: {
       body: JSON.stringify({
         demo: isDemo,
         dismissed_ids: dismissedIds,
+        clicked_ids: clickedIds,
       }),
     });
 

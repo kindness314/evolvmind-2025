@@ -1,9 +1,8 @@
-import { Bell, Lock, Palette, Cpu, Database, ChevronRight, LogOut, Sparkles, Loader2 } from 'lucide-react';
+import { Lock, Cpu, Database, LogOut, Sparkles, Loader2, ShieldCheck, XCircle } from 'lucide-react';
 import { motion } from 'motion/react';
-import { Switch } from './ui/switch';
 import { createClient } from '@supabase/supabase-js';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { requestKnowledgeNodeBackfill } from '../../lib/graphSearch';
 import { requestBackfill } from '../../lib/search';
 
@@ -45,11 +44,95 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
   const [autoNodeBackfilling, setAutoNodeBackfilling] = useState(false);
   const stopBackfillRef = useRef(false);
   const stopNodeBackfillRef = useRef(false);
-
   const supabase = createClient(
     `https://${projectId}.supabase.co`,
     publicAnonKey
   );
+  const [stats, setStats] = useState<{ captures: number; nodes: number; links: number } | null>(null);
+  // 演示模式：固定共享 scope，无真实 Supabase 会话
+  const [isDemo] = useState(() => localStorage.getItem('demo_auth') === 'true');
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [userName, setUserName] = useState<string | null>(null);
+  // 服务端真实模型（O4：删除 GPT/Claude/Whisper 假下拉后，能力区展示真实模型）
+  const [models, setModels] = useState<{ baseUrl: string; ids: string[] } | null>(null);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  // 数据统计：真实计数（此前为硬编码 342/28/156 假数据）
+  useEffect(() => {
+    let cancelled = false;
+    const loadStats = async () => {
+      try {
+        const [captures, nodes, links] = await Promise.all([
+          supabase.from('captured_info').select('id', { count: 'exact', head: true }),
+          supabase.from('knowledge_nodes').select('id', { count: 'exact', head: true }),
+          supabase.from('knowledge_links').select('id', { count: 'exact', head: true }),
+        ]);
+        if (cancelled) return;
+        setStats({
+          captures: captures.count ?? 0,
+          nodes: nodes.count ?? 0,
+          links: links.count ?? 0,
+        });
+      } catch {
+        // 统计加载失败不阻塞页面
+      }
+    };
+    void loadStats();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase]);
+
+  // 真实用户信息（Demo 模式无会话，显示演示账户）
+  useEffect(() => {
+    let cancelled = false;
+    const loadUser = async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        const user = data?.user;
+        if (!cancelled && user) {
+          const meta = user.user_metadata as Record<string, unknown> | undefined;
+          setUserEmail(user.email ?? null);
+          setUserName(typeof meta?.full_name === 'string' ? meta.full_name : typeof meta?.name === 'string' ? meta.name : null);
+        }
+      } catch {
+        // 未登录/会话失效：保持默认显示
+      }
+    };
+    if (!isDemo) void loadUser();
+    return () => {
+      cancelled = true;
+    };
+  }, [isDemo, supabase]);
+
+  // 服务端真实模型列表（O4：设置页展示实际能力，不伪装）
+  useEffect(() => {
+    let cancelled = false;
+    const loadModels = async () => {
+      try {
+        const resp = await fetch('/api/models');
+        const json = (await resp.json()) as { ok?: boolean; baseUrl?: string; models?: string[] };
+        if (!cancelled) {
+          if (json.ok && Array.isArray(json.models)) {
+            setModels({ baseUrl: json.baseUrl ?? '', ids: json.models });
+            setModelsError(null);
+          } else {
+            setModels(null);
+            setModelsError('无法获取服务端模型列表');
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setModels(null);
+          setModelsError('模型服务不可达');
+        }
+      }
+    };
+    void loadModels();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
 
   const handleLogout = async () => {
     if (loggingOut) return;
@@ -175,19 +258,22 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
 
   return (
     <div className="h-full overflow-y-auto bg-gray-50 pb-20">
-      {/* 用户信息卡片 */}
+      {/* 用户信息卡片（O4：真实 Supabase 用户；Demo 明确标注演示账户 + 共享数据） */}
       <div className="bg-white p-6 mb-4">
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 bg-blue-500 flex items-center justify-center text-white text-2xl font-medium"
-            style={{ borderRadius: '4px' }}
+          <div className="w-16 h-16 bg-brand flex items-center justify-center text-white text-2xl font-medium rounded-2xl shadow-card"
           >
-            U
+            {isDemo ? '演' : (userName || userEmail || 'U').slice(0, 1).toUpperCase()}
           </div>
-          <div className="flex-1">
-            <h3 className="text-base font-medium text-gray-900">用户名称</h3>
-            <p className="text-sm text-gray-500">user@example.com</p>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-medium text-gray-900 truncate">{isDemo ? '演示账户' : (userName || '用户')}</h3>
+            <p className="text-sm text-gray-500 truncate">{isDemo ? '共享演示数据，仅供体验' : (userEmail || '加载中...')}</p>
+            {isDemo ? (
+              <span className="inline-block mt-1.5 text-[11px] text-amber-700 bg-warning-soft border border-amber-200 px-2 py-0.5 rounded-full">
+                演示模式：数据为所有演示用户共享，操作不会影响你的真实账户
+              </span>
+            ) : null}
           </div>
-          <ChevronRight className="w-5 h-5 text-gray-400" />
         </div>
       </div>
 
@@ -196,120 +282,87 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
         <h3 className="text-sm font-medium text-gray-700 mb-3">数据统计</h3>
         <div className="grid grid-cols-3 gap-4">
           <div className="text-center">
-            <p className="text-2xl font-medium text-gray-900">342</p>
+            <p className="text-2xl font-medium text-gray-900">{stats ? stats.captures : '—'}</p>
             <p className="text-xs text-gray-500 mt-1">已捕获</p>
           </div>
           <div className="text-center border-l border-r border-gray-200">
-            <p className="text-2xl font-medium text-gray-900">28</p>
+            <p className="text-2xl font-medium text-gray-900">{stats ? stats.nodes : '—'}</p>
             <p className="text-xs text-gray-500 mt-1">知识节点</p>
           </div>
           <div className="text-center">
-            <p className="text-2xl font-medium text-gray-900">156</p>
+            <p className="text-2xl font-medium text-gray-900">{stats ? stats.links : '—'}</p>
             <p className="text-xs text-gray-500 mt-1">关联关系</p>
           </div>
         </div>
       </div>
 
-      {/* 功能设置 */}
+      {/* 数据与隐私（O4：删除无真实行为的假开关，改为如实说明） */}
       <div className="bg-white mb-4">
         <div className="px-4 py-3 border-b border-gray-200">
-          <h3 className="text-sm font-medium text-gray-700">功能设置</h3>
+          <h3 className="text-sm font-medium text-gray-700 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-gray-500" />
+            数据与隐私
+          </h3>
         </div>
-        
         <div className="divide-y divide-gray-200">
-          <div className="px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Bell className="w-5 h-5 text-gray-500" />
-              <div>
-                <p className="text-sm text-gray-900">消息通知</p>
-                <p className="text-xs text-gray-500">接收处理完成通知</p>
-              </div>
+          <div className="px-4 py-3 flex items-start gap-3">
+            <Lock className="w-5 h-5 text-gray-500 flex-none mt-0.5" />
+            <div>
+              <p className="text-sm text-gray-900">数据存储</p>
+              <p className="text-xs text-gray-500">内容、知识图谱与文件保存在你的私有账户空间，与其他用户隔离（演示模式为共享空间）。</p>
             </div>
-            <Switch defaultChecked />
           </div>
-
-          <div className="px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Database className="w-5 h-5 text-gray-500" />
-              <div>
-                <p className="text-sm text-gray-900">自动同步</p>
-                <p className="text-xs text-gray-500">自动备份到云端</p>
-              </div>
+          <div className="px-4 py-3 flex items-start gap-3">
+            <Cpu className="w-5 h-5 text-gray-500 flex-none mt-0.5" />
+            <div>
+              <p className="text-sm text-gray-900">AI 处理</p>
+              <p className="text-xs text-gray-500">摘要、图谱抽取与推荐调用服务端 AI 接口处理你的内容；原始内容始终保留在你的账户内。</p>
             </div>
-            <Switch defaultChecked />
           </div>
-
-          <div className="px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Lock className="w-5 h-5 text-gray-500" />
-              <div>
-                <p className="text-sm text-gray-900">隐私保护</p>
-                <p className="text-xs text-gray-500">本地处理敏感信息</p>
-              </div>
+          <div className="px-4 py-3 flex items-start gap-3">
+            <Database className="w-5 h-5 text-gray-500 flex-none mt-0.5" />
+            <div>
+              <p className="text-sm text-gray-900">未启用能力</p>
+              <p className="text-xs text-gray-500">系统通知、自动备份、深色模式与 OCR/语音解析尚未实现，此处不提供无效开关。</p>
             </div>
-            <Switch />
-          </div>
-
-          <div className="px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Palette className="w-5 h-5 text-gray-500" />
-              <div>
-                <p className="text-sm text-gray-900">深色模式</p>
-                <p className="text-xs text-gray-500">切换界面主题</p>
-              </div>
-            </div>
-            <Switch />
           </div>
         </div>
       </div>
 
-      {/* 模型偏好 */}
+      {/* 模型与能力（O4：删除 GPT/Claude/Whisper 假下拉，显示服务端真实模型与未启用能力） */}
       <div className="bg-white mb-4">
         <div className="px-4 py-3 border-b border-gray-200">
-          <h3 className="text-sm font-medium text-gray-700">模型偏好</h3>
+          <h3 className="text-sm font-medium text-gray-700 flex items-center gap-2">
+            <Cpu className="w-4 h-4 text-gray-500" />
+            模型与能力
+          </h3>
         </div>
-
-        <div className="p-4 space-y-4">
+        <div className="p-4 space-y-3">
           <div>
-            <label className="text-xs text-gray-600 mb-2 block flex items-center gap-2">
-              <Cpu className="w-4 h-4" />
-              文本提取模型
-            </label>
-            <select
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              style={{ borderRadius: '4px' }}
-            >
-              <option>GPT-4 (推荐)</option>
-              <option>GPT-3.5 Turbo</option>
-              <option>Claude 3</option>
-              <option>本地模型</option>
-            </select>
+            <p className="text-xs text-gray-600 mb-1">文本与图谱提取（服务端）</p>
+            {models ? (
+              <p className="text-xs text-gray-800 bg-gray-50 border border-gray-200 px-3 py-2 rounded-lg">
+                {models.ids.filter((id) => !/bge|embed/i.test(id)).slice(0, 3).join('、') || '服务端未返回模型'}
+                {models.ids.filter((id) => !/bge|embed/i.test(id)).length > 3 ? ` 等 ${models.ids.filter((id) => !/bge|embed/i.test(id)).length} 个模型` : ''}
+              </p>
+            ) : (
+              <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 px-3 py-2 rounded-lg">
+                {modelsError || '加载中...'}
+              </p>
+            )}
           </div>
-
           <div>
-            <label className="text-xs text-gray-600 mb-2 block">图像识别模型</label>
-            <select
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              style={{ borderRadius: '4px' }}
-            >
-              <option>GPT-4 Vision (推荐)</option>
-              <option>Claude 3 Vision</option>
-              <option>Gemini Vision</option>
-              <option>本地模型</option>
-            </select>
+            <p className="text-xs text-gray-600 mb-1">语义搜索嵌入</p>
+            <p className="text-xs text-gray-800 bg-gray-50 border border-gray-200 px-3 py-2 rounded-lg">
+              BAAI/bge-m3（1024 维）
+            </p>
           </div>
-
           <div>
-            <label className="text-xs text-gray-600 mb-2 block">语音转写模型</label>
-            <select
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              style={{ borderRadius: '4px' }}
-            >
-              <option>Whisper (推荐)</option>
-              <option>Azure Speech</option>
-              <option>Google Speech</option>
-              <option>本地模型</option>
-            </select>
+            <p className="text-xs text-gray-600 mb-1">未启用能力</p>
+            <p className="flex items-center gap-2 text-xs text-gray-500">
+              <XCircle className="w-3.5 h-3.5 text-gray-400 flex-none" />
+              图像识别 / 语音转写 / 文档解析（上传仅保存元数据）
+            </p>
           </div>
         </div>
       </div>
@@ -334,8 +387,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
             whileTap={{ scale: 0.95 }}
             onClick={handleBackfill}
             disabled={backfilling || autoBackfilling}
-            className="w-full px-4 py-2.5 bg-purple-500 text-white text-sm font-medium hover:bg-purple-600 transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2"
-            style={{ borderRadius: '4px' }}
+            className="w-full px-4 py-2.5 bg-brand text-white text-sm font-medium hover:bg-brand-strong transition-colors disabled:bg-brand/50 flex items-center justify-center gap-2 rounded-xl shadow-card"
           >
             {backfilling ? (
               <>
@@ -350,8 +402,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
             whileTap={{ scale: 0.95 }}
             onClick={autoBackfilling ? handleStopBackfill : handleAutoBackfill}
             disabled={backfilling}
-            className="w-full px-4 py-2.5 bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 transition-colors disabled:bg-indigo-300 flex items-center justify-center gap-2"
-            style={{ borderRadius: '4px' }}
+            className="w-full px-4 py-2.5 bg-brand-muted text-white text-sm font-medium hover:brightness-110 transition-all disabled:bg-brand-muted/50 flex items-center justify-center gap-2 rounded-xl"
           >
             {autoBackfilling ? (
               <>
@@ -363,7 +414,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
             )}
           </motion.button>
           {backfillResult && (
-            <p className="text-xs text-gray-600 bg-gray-50 p-2" style={{ borderRadius: '4px' }}>
+            <p className="text-xs text-gray-600 bg-gray-50 p-2 rounded-lg">
               {backfillResult}
             </p>
           )}
@@ -374,8 +425,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
               whileTap={{ scale: 0.95 }}
               onClick={handleNodeBackfill}
               disabled={nodeBackfilling || autoNodeBackfilling}
-              className="w-full px-4 py-2.5 bg-blue-500 text-white text-sm font-medium hover:bg-blue-600 transition-colors disabled:bg-blue-300 flex items-center justify-center gap-2"
-              style={{ borderRadius: '4px' }}
+              className="w-full px-4 py-2.5 bg-brand text-white text-sm font-medium hover:bg-brand-strong transition-colors disabled:bg-brand/50 flex items-center justify-center gap-2 rounded-xl shadow-card"
             >
               {nodeBackfilling ? (
                 <>
@@ -390,8 +440,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
               whileTap={{ scale: 0.95 }}
               onClick={autoNodeBackfilling ? handleStopNodeBackfill : handleAutoNodeBackfill}
               disabled={nodeBackfilling}
-              className="w-full px-4 py-2.5 bg-cyan-500 text-white text-sm font-medium hover:bg-cyan-600 transition-colors disabled:bg-cyan-300 flex items-center justify-center gap-2"
-              style={{ borderRadius: '4px' }}
+              className="w-full px-4 py-2.5 bg-brand-muted text-white text-sm font-medium hover:brightness-110 transition-all disabled:bg-brand-muted/50 flex items-center justify-center gap-2 rounded-xl"
             >
               {autoNodeBackfilling ? (
                 <>
@@ -403,7 +452,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
               )}
             </motion.button>
             {nodeBackfillResult && (
-              <p className="text-xs text-gray-600 bg-gray-50 p-2" style={{ borderRadius: '4px' }}>
+              <p className="text-xs text-gray-600 bg-gray-50 p-2 rounded-lg">
                 {nodeBackfillResult}
               </p>
             )}
@@ -414,31 +463,16 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
       {/* 其他设置 */}
       <div className="bg-white">
         <div className="divide-y divide-gray-200">
-          <button className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
-            <span className="text-sm text-gray-900">存储管理</span>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">2.3 GB / 10 GB</span>
-              <ChevronRight className="w-4 h-4 text-gray-400" />
-            </div>
-          </button>
-
-          <button className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
-            <span className="text-sm text-gray-900">导出数据</span>
-            <ChevronRight className="w-4 h-4 text-gray-400" />
-          </button>
-
-          <button className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
-            <span className="text-sm text-gray-900">帮助与反馈</span>
-            <ChevronRight className="w-4 h-4 text-gray-400" />
-          </button>
-
-          <button className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
+          <div className="px-4 py-3 flex items-center justify-between">
             <span className="text-sm text-gray-900">关于</span>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">v1.0.0</span>
-              <ChevronRight className="w-4 h-4 text-gray-400" />
-            </div>
-          </button>
+            <span className="text-xs text-gray-500">v1.0.0</span>
+          </div>
+
+          <div className="px-4 py-3 flex items-center justify-between">
+            <span className="text-sm text-gray-900">运行环境</span>
+            <span className="text-xs text-gray-500">{isDemo ? '演示模式' : '个人账户'}</span>
+          </div>
+
 
           <button 
             onClick={handleLogout}

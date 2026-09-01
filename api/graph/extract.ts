@@ -1,3 +1,5 @@
+import { resolveRequestScope } from '../_lib/requestScope.js';
+
 type VercelRequest = {
   method?: string;
   headers: Record<string, string | string[] | undefined>;
@@ -23,8 +25,10 @@ type GraphNodeKind =
   | 'conclusion'
   | 'todo'
   | 'question'
-  | 'time'
-  | 'location';
+  | 'location'
+  | 'organization'
+  | 'role'
+  | 'time';
 
 type GraphLinkType =
   | 'causes'
@@ -56,6 +60,8 @@ type ExtractedGraph = {
 };
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
 // Vercel 函数时长上限: 默认 Hobby 10s 会杀掉正常 LLM 调用(实测 8-13s), 提到 60s 与总预算对齐
 export const maxDuration = 60;
@@ -225,7 +231,7 @@ function uniqStrings(values: any[]): string[] {
 
 function normalizeKind(k: any): GraphNodeKind {
   const v = (k ?? '').toString().trim().toLowerCase();
-  const allowed: GraphNodeKind[] = ['person', 'event', 'object', 'concept', 'view', 'conclusion', 'todo', 'question', 'time', 'location'];
+  const allowed: GraphNodeKind[] = ['person', 'event', 'object', 'concept', 'view', 'conclusion', 'todo', 'question', 'time', 'location', 'organization', 'role'];
   if ((allowed as string[]).includes(v)) return v as GraphNodeKind;
   return 'concept';
 }
@@ -476,6 +482,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method Not Allowed' });
+    return;
+  }
+
+  // 发布门禁 4: LLM 端点认证 —— Demo（header/body.demo）或真实 Bearer 才允许调用，防止匿名消耗配额
+  try {
+    await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+  } catch (e: unknown) {
+    res.status(401).json({ error: e instanceof Error ? e.message : 'Authentication required' });
     return;
   }
 

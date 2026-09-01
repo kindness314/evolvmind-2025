@@ -1,20 +1,34 @@
-import { useState, useEffect } from 'react';
-import { Home, Share2, User, Database } from 'lucide-react';
+import { useState, useEffect, lazy, Suspense } from 'react';
+import { Home, Share2, User, Database, Loader2, PenSquare } from 'lucide-react';
 import { motion } from 'motion/react';
 import { HomePage } from './components/HomePage';
 import { DataPage } from './components/DataPage';
 import { CapturePage } from './components/CapturePage';
-import { ProcessPage } from './components/ProcessPage';
-import { KnowledgePage } from './components/KnowledgePage';
 import { SettingsPage } from './components/SettingsPage';
 import { LoginPage } from './components/LoginPage';
 import { ItemDetailPage } from './components/ItemDetailPage';
 import { supabase } from '../lib/supabase';
 
-type Page = 'home' | 'capture' | 'data' | 'process' | 'knowledge' | 'settings' | 'item-detail';
+// O6: KnowledgePage 懒加载 —— 它独占 react-force-graph-2d 依赖，
+// 静态 import 会把 ~890KB 的 force-graph 打进主 chunk（影响首屏）。
+// keep-alive 机制下懒加载组件挂载后常驻，切换页面不会重新加载。
+const KnowledgePage = lazy(() =>
+  import('./components/KnowledgePage').then((module) => ({ default: module.KnowledgePage }))
+);
+
+function KnowledgePageFallback() {
+  return (
+    <div className="h-full flex flex-col items-center justify-center bg-slate-50">
+      <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-2" />
+      <p className="text-sm text-gray-500">加载知识网络...</p>
+    </div>
+  );
+}
+
+type Page = 'home' | 'capture' | 'data' | 'knowledge' | 'settings' | 'item-detail';
 
 // keep-alive: 常驻页面清单 — 首次访问挂载后常驻, 切换只改可见性, 不再重新请求数据
-const KEEP_ALIVE_PAGES: Page[] = ['home', 'capture', 'data', 'process', 'knowledge', 'settings', 'item-detail'];
+const KEEP_ALIVE_PAGES: Page[] = ['home', 'capture', 'data', 'knowledge', 'settings', 'item-detail'];
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('home');
@@ -99,6 +113,15 @@ export default function App() {
     }
   };
 
+  // 底部导航项定义（统一渲染，iOS/Material 胶囊高亮）
+  const navItems: { page: Page; label: string; icon: typeof Home }[] = [
+    { page: 'home', label: '首页', icon: Home },
+    { page: 'capture', label: '捕获', icon: PenSquare },
+    { page: 'data', label: '数据', icon: Database },
+    { page: 'knowledge', label: '知识网络', icon: Share2 },
+    { page: 'settings', label: '个人中心', icon: User },
+  ];
+
   const renderPageFor = (page: Page) => {
     switch (page) {
       case 'data':
@@ -107,10 +130,12 @@ export default function App() {
         return <HomePage active={page === currentPage} onNavigate={(p, id) => handlePageChange(p as Page, id)} />;
       case 'capture':
         return <CapturePage active={page === currentPage} onNavigate={(p, id) => handlePageChange(p as Page, id)} />;
-      case 'process':
-        return <ProcessPage />;
       case 'knowledge':
-        return <KnowledgePage initialNodeId={selectedKnowledgeNodeId} onNavigate={(p, id) => handlePageChange(p as Page, id)} />;
+        return (
+          <Suspense fallback={<KnowledgePageFallback />}>
+            <KnowledgePage initialNodeId={selectedKnowledgeNodeId} onNavigate={(p, id) => handlePageChange(p as Page, id)} />
+          </Suspense>
+        );
       case 'settings':
         return <SettingsPage onLogout={handleLogout} />;
       case 'item-detail':
@@ -119,7 +144,8 @@ export default function App() {
             itemId={selectedItemId}
             onBack={() => handlePageChange('home')}
             onUpdate={() => {
-              // 触发列表刷新逻辑（如果需要的话，目前通过 useEffect 在 home 页面自动处理）
+              // 删除/编辑/置顶后通知数据页与首页立即增量同步（DataPage 监听 evolvmind:data-changed）
+              window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
             }}
           />
         ) : null;
@@ -156,89 +182,36 @@ export default function App() {
 
       {/* 底部导航 */}
       {currentPage !== 'item-detail' && (
-        <nav className="flex-none bg-white border-t border-gray-200">
-          <div className="flex items-center px-2 py-2">
-            <button
-              onClick={() => handlePageChange('home')}
-              className={`flex-1 flex flex-col items-center gap-1 py-2 transition-all duration-200 ${
-                currentPage === 'home' ? 'text-blue-500' : 'text-gray-500'
-              }`}
-            >
-              <motion.div
-                animate={{ scale: currentPage === 'home' ? 1.1 : 1 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 17 }}
-              >
-                <Home className="w-6 h-6" />
-              </motion.div>
-              <span className="text-xs">首页</span>
-            </button>
-
-            <button
-              onClick={() => handlePageChange('capture')}
-              className={`flex-1 flex flex-col items-center gap-1 py-2 transition-all duration-200 ${
-                currentPage === 'capture' ? 'text-blue-500' : 'text-gray-500'
-              }`}
-            >
-              <motion.div
-                className="w-6 h-6 flex items-center justify-center"
-                animate={{ scale: currentPage === 'capture' ? 1.1 : 1 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 17 }}
-              >
-                <div
-                  className={`w-5 h-5 border-2 ${
-                    currentPage === 'capture' ? 'border-blue-500' : 'border-gray-500'
-                  }`}
-                  style={{ borderRadius: '4px' }}
+        <nav className="flex-none border-t border-gray-100 bg-white/80 backdrop-blur-xl">
+          <div className="flex items-center px-3 pt-1.5 pb-2">
+            {navItems.map((item) => {
+              const active = currentPage === item.page;
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.page}
+                  onClick={() => handlePageChange(item.page)}
+                  className="flex-1 flex flex-col items-center gap-0.5 py-1.5 relative"
+                  aria-label={item.label}
                 >
-                </div>
-              </motion.div>
-              <span className="text-xs">捕获</span>
-            </button>
-
-            <button
-              onClick={() => handlePageChange('data')}
-              className={`flex-1 flex flex-col items-center gap-1 py-2 transition-all duration-200 ${
-                currentPage === 'data' ? 'text-blue-500' : 'text-gray-500'
-              }`}
-            >
-              <motion.div
-                animate={{ scale: currentPage === 'data' ? 1.1 : 1 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 17 }}
-              >
-                <Database className="w-6 h-6" />
-              </motion.div>
-              <span className="text-xs">数据</span>
-            </button>
-
-            <button
-              onClick={() => handlePageChange('knowledge')}
-              className={`flex-1 flex flex-col items-center gap-1 py-2 transition-all duration-200 ${
-                currentPage === 'knowledge' ? 'text-blue-500' : 'text-gray-500'
-              }`}
-            >
-              <motion.div
-                animate={{ scale: currentPage === 'knowledge' ? 1.1 : 1 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 17 }}
-              >
-                <Share2 className="w-6 h-6" />
-              </motion.div>
-              <span className="text-xs">知识网络</span>
-            </button>
-
-            <button
-              onClick={() => handlePageChange('settings')}
-              className={`flex-1 flex flex-col items-center gap-1 py-2 transition-all duration-200 ${
-                currentPage === 'settings' ? 'text-blue-500' : 'text-gray-500'
-              }`}
-            >
-              <motion.div
-                animate={{ scale: currentPage === 'settings' ? 1.1 : 1 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 17 }}
-              >
-                <User className="w-6 h-6" />
-              </motion.div>
-              <span className="text-xs">个人中心</span>
-            </button>
+                  <motion.div
+                    className={`flex items-center justify-center w-12 h-7 transition-colors duration-200 ${
+                      active ? 'text-white bg-brand shadow-card' : 'text-gray-400'
+                    }`}
+                    style={{ borderRadius: active ? 999 : 8, boxShadow: active ? '0 3px 9px rgba(10,132,255,0.35)' : undefined }}
+                    animate={{ scale: active ? 1.08 : 1 }}
+                    transition={{ type: 'spring', stiffness: 400, damping: 20 }}
+                  >
+                    <Icon className="w-[22px] h-[22px]" strokeWidth={active ? 2.4 : 2} />
+                  </motion.div>
+                  <span className={`text-[11px] leading-none transition-colors duration-200 ${
+                    active ? 'text-brand font-medium' : 'text-gray-400'
+                  }`}>
+                    {item.label}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </nav>
       )}

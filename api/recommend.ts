@@ -25,6 +25,8 @@ import {
   buildGraphIndex,
   computeThemeTrends,
   findGraphBridgePaths,
+  findPprBridgePaths,
+  findImplicitPairs,
   chainText,
   type CapturedRow,
   type NodeRow,
@@ -37,6 +39,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJ
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || process.env.MINIMAX_CHAT_API_KEY || '';
+const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL || 'https://api.edgefn.net/v1';
+const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-M2.5';
 const MAX_RECOMMENDATIONS = 6;
 
 /** 主题升温窗口：近 7 天 vs 更早 */
@@ -66,6 +70,53 @@ interface RecommendationItem {
   evidence: RecommendationEvidence[];
 }
 
+function safeJsonParse(text: string): unknown {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+/** 从 LLM 文本提取 JSON 数组（容忍 markdown fence / 前后文字） */
+function extractJsonArray(text: string): unknown[] | null {
+  if (!text) return null;
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start === -1 || end === -1 || end <= start) return null;
+  const slice = text.slice(start, end + 1);
+  const parsed = safeJsonParse(slice);
+  return Array.isArray(parsed) ? parsed : null;
+}
+
+/**
+ * 用 LLM 为每条推荐生成更自然的理由（针对该条的具体内容）。
+ * 短超时（5s）+ 失败/数量不匹配时保留确定性 reason，避免推荐因 LLM 失败而空白或卡太久。
+ */
+async function enrichRecommendationReasons(recommendations: RecommendationItem[]): Promise<RecommendationItem[]> {
+  if (!MINIMAX_API_KEY || recommendations.length === 0) return recommendations;
+  const prompt = [
+    `你是知识助手，理解用户记录意图。下面有 ${recommendations.length} 条知识推荐，请为每条生成一句自然、贴切、有洞察的中文推荐理由（≤40字，第二人称"你"，不要模板套话，不同条理由句式尽量不同，像真人读懂用户的推荐语）。`,
+    `只输出 JSON 数组，如 ["理由1","理由2",...]，与输入顺序一一对应。`,
+    ``,
+    ...recommendations.map((r, i) => `【${i}】类型 ${r.type}：${r.title}`),
+  ].join('\n');
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(`${MINIMAX_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MINIMAX_API_KEY}` },
+      body: JSON.stringify({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: prompt }], temperature: 0.7 }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!resp.ok) return recommendations;
+    const text = await resp.text();
+    const arr = extractJsonArray(text);
+    if (!arr || arr.length !== recommendations.length) return recommendations;
+    return recommendations.map((r, i) => ({ ...r, reason: typeof arr[i] === 'string' && arr[i] ? arr[i] : r.reason }));
+  } catch {
+    return recommendations;
+  }
+}
+
 /** 最近天数文案 */
 function daysAgoText(createdAt?: string): string {
   if (!createdAt) return '';
@@ -77,6 +128,86 @@ function daysAgoText(createdAt?: string): string {
   return `${days} 天前`;
 }
 
+
+// ---------------------------------------------------------------------------
+// P5/P6 多信号融合：BM25 关键词信号 + 候选统一打分
+// ---------------------------------------------------------------------------
+
+/** 中英文混合 tokenizer：中文按单字+相邻双字，英文按词 */
+function tokenize(text: string): string[] {
+  const tokens: string[] = [];
+  const cjk = text.match(/[\u4e00-\u9fff]/g) || [];
+  for (let i = 0; i < cjk.length; i += 1) {
+    tokens.push(cjk[i]);
+    if (i + 1 < cjk.length) tokens.push(cjk[i] + cjk[i + 1]);
+  }
+  const words = text.toLowerCase().match(/[a-z][a-z0-9-]{1,}/g) || [];
+  tokens.push(...words);
+  return tokens;
+}
+
+/** BM25 得分：query 相对语料中每条文档的加权相关度（k1=1.5, b=0.75） */
+function bm25(query: string, docs: string[]): number {
+  const qTokens = tokenize(query);
+  if (qTokens.length === 0 || docs.length === 0) return 0;
+  const docTokens = docs.map(tokenize);
+  const N = docTokens.length;
+  const avgLen = docTokens.reduce((s, t) => s + t.length, 0) / N;
+  const df = new Map<string, number>();
+  for (const toks of docTokens) {
+    for (const t of new Set(toks)) df.set(t, (df.get(t) || 0) + 1);
+  }
+  const k1 = 1.5;
+  const b = 0.75;
+  let score = 0;
+  const seen = new Set<string>();
+  for (const q of qTokens) {
+    if (seen.has(q)) continue;
+    seen.add(q);
+    const docFreq = df.get(q) || 0;
+    if (docFreq === 0) continue;
+    const idf = Math.log(1 + (N - docFreq + 0.5) / (docFreq + 0.5));
+    for (const toks of docTokens) {
+      const tf = toks.filter((t) => t === q).length;
+      if (tf === 0) continue;
+      score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (toks.length / avgLen))));
+    }
+  }
+  return score;
+}
+
+/** 候选条目：原始推荐 + 三信号分（语义/关键词/图路径）+ 基础分 */
+interface ScoredCandidate {
+  item: RecommendationItem;
+  semantic: number;
+  keyword: number;
+  graph: number;
+  base: number;
+}
+
+/** 三信号加权（语义 0.4 / 关键词 0.3 / 图 0.3）+ 基础分 0.3 */
+function candidateScore(c: ScoredCandidate): number {
+  return 0.4 * c.semantic + 0.3 * c.keyword + 0.3 * c.graph + 0.3 * c.base;
+}
+
+
+/** 分页拉取全部行：PostgREST 默认 max_rows=1000，超出会被静默截断（实测 1027 节点/1570 边只取回 1000） */
+async function fetchAllRows(url: string, headers: Record<string, string>): Promise<unknown[]> {
+  const PAGE = 1000;
+  const rows: unknown[] = [];
+  let from = 0;
+  for (;;) {
+    const resp = await fetch(url, {
+      headers: { ...headers, 'Range-Unit': 'items', Range: `${from}-${from + PAGE - 1}` },
+    });
+    if (!resp.ok) throw new Error(`查询失败: ${resp.status} ${await resp.text()}`);
+    const page = (await resp.json()) as unknown[];
+    rows.push(...page);
+    if (page.length < PAGE) break;
+    from += PAGE;
+  }
+  return rows;
+}
 function captureEvidence(c: CapturedRow): RecommendationEvidence {
   return { type: 'capture', id: c.id, title: c.title || '未命名' };
 }
@@ -140,21 +271,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const nodesScopeFilter = requestScope.isDemo
       ? 'user_id=is.null'
       : `user_id=eq.${encodeURIComponent(scopeId)}`;
-    const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids&${nodesScopeFilter}&limit=2000`;
-    const nodesResp = await fetch(nodesUrl, { headers });
-    const nodes: NodeRow[] = nodesResp.ok ? (await nodesResp.json()) as NodeRow[] : [];
+    // 查询知识节点（分页拉全：PostgREST 默认 max_rows=1000，limit=2000 会被静默截断为 1000）
+    const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids&${nodesScopeFilter}`;
+    const nodes: NodeRow[] = (await fetchAllRows(nodesUrl, headers)) as NodeRow[];
 
-    // 查询知识链接
-    const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=source,target&scope_id=eq.${encodeURIComponent(scopeId)}&limit=3000`;
-    const linksResp = await fetch(linksUrl, { headers });
-    const links: LinkRow[] = linksResp.ok ? (await linksResp.json()) as LinkRow[] : [];
+    // 查询知识链接（同样分页拉全）
+    const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=source,target&scope_id=eq.${encodeURIComponent(scopeId)}`;
+    const links: LinkRow[] = (await fetchAllRows(linksUrl, headers)) as LinkRow[];
 
     const graphIndex = buildGraphIndex(nodes, links);
-    const recommendations: RecommendationItem[] = [];
 
-    // 排除噪声捕获（不参与推荐，避免"天气不错"上桌）
     const signalCaptured = captured.filter(
-      (c) => !isNoiseCapture(c.title, c.summary, c.content),
+      (c) => !isNoiseCapture(c.title, c.summary, c.content, c.tags),
     );
 
     // 捕获 ID → 节点 映射（用于 review 的节点计数与证据）
@@ -182,38 +310,58 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       embeddedCaptures = await batchEmbedCaptures(forEmbedding, MINIMAX_API_KEY);
     }
 
+    // P6 BM25 语料：全部信号捕获的标题+内容，作为关键词信号的参照集
+    const bm25Corpus = signalCaptured.map((c) => `${c.title || ''} ${c.summary || ''} ${c.content || ''}`.trim());
+    const kwSignal = (text: string): number => {
+      if (!text) return 0;
+      return Math.min(1, bm25(text, bm25Corpus) / 50); // 归一化：50 为经验上限
+    };
+
+    // P5 候选池：统一打分（semantic/keyword/graph 三信号 + base）
+    const candidates: ScoredCandidate[] = [];
+    const dismissedSet = new Set(dismissedIds);
+    const clickedSet = new Set<string>(Array.isArray(req.body?.clicked_ids)
+      ? (req.body.clicked_ids as unknown[]).filter((id): id is string => typeof id === 'string')
+      : []);
+
     // --- Rule 1: review — 未关联到知识节点的近期捕获 ---
     for (const item of signalCaptured) {
-      if (recommendations.length >= MAX_RECOMMENDATIONS) break;
       if (graphIndex.linkedCapturedIds.has(item.id)) continue;
       const recId = `review-${item.id}`;
-      if (dismissedIds.includes(recId)) continue;
       // 信号门槛：无标签且正文很短 → 视为碎片/噪声，不上推荐
       const textLen = Math.max((item.content || '').length, (item.summary || '').length);
       const hasSignal = (Array.isArray(item.tags) && item.tags.length > 0) || textLen >= 24;
       if (!hasSignal) continue;
       const nodeCount = capturedIdToNodes.get(item.id)?.length || 0;
       const ago = daysAgoText(item.created_at);
-      recommendations.push({
-        id: recId,
-        type: 'review',
-        title: item.title || '未命名内容',
-        reason: `${ago}你记录了「${item.title}」${item.tags?.length ? `（标签：${item.tags.slice(0, 3).join('、')}）` : '（没有标签）'}，但它还没有生成任何知识节点，其中可能藏着你没意识到的线索`,
-        action: nodeCount === 0
-          ? '点击打开这条记录，把核心概念补进知识图谱；如果内容与已有主题相关，直接合并而不是新建'
-          : '点击打开这条记录，检查它关联的节点是否准确，或手动补上缺失的概念',
-        targetType: 'captured',
-        targetId: item.id,
-        evidence: [captureEvidence(item)],
+      candidates.push({
+        item: {
+          id: recId,
+          type: 'review',
+          title: item.title || '未命名内容',
+          reason: `${ago}你记录了「${item.title}」${item.tags?.length ? `（标签：${item.tags.slice(0, 3).join('、')}）` : '（没有标签）'}——它当时可能是个灵光一现的想法，回头看也许还有价值`,
+          action: nodeCount === 0
+            ? item.tags?.length
+              ? `「${item.title}」值得再读一遍——如果它还是你想的，给它补一点自己的想法；如果今非昔比，就让它过去`
+              : `「${item.title}」你想过就忘了？花 1 分钟回忆一下当时为什么记它，也许能捡回一个思路`
+            : `「${item.title}」你已经想到 ${nodeCount} 处了——回看一下，是不是该把这个想法往前推一步`,
+          targetType: 'captured',
+          targetId: item.id,
+          evidence: [captureEvidence(item)],
+        },
+        semantic: 0,
+        keyword: kwSignal(`${item.title || ''} ${item.summary || ''}`),
+        graph: 0,
+        base: 0.4,
       });
     }
 
-    // --- Rule 2: semantic — embedding 相似但对（无共享标签）---
-    if (recommendations.length < MAX_RECOMMENDATIONS && embeddedCaptures.length >= 2) {
+    // --- Rule 2: semantic — embedding 相似但对（无共享标签，P6 阈值降至 0.55 扩池）---
+    if (embeddedCaptures.length >= 2) {
       const similarPairs = findSimilarPairs(embeddedCaptures, {
-        minSimilarity: 0.60,
+        minSimilarity: 0.55,
         excludeSharedTags: true,
-        maxPairs: MAX_RECOMMENDATIONS,
+        maxPairs: 15,
       });
       // 多样性：同一捕获最多参与 1 条语义推荐，避免同一捕获与多个近邻重复刷屏
       const usedCaptures = new Set<string>();
@@ -225,9 +373,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
 
       for (const pair of diversePairs) {
-        if (recommendations.length >= MAX_RECOMMENDATIONS) break;
         const recId = `sem-${pair.a.id}-${pair.b.id}`;
-        if (dismissedIds.includes(recId)) continue;
         const simPct = Math.round(pair.similarity * 100);
         const aTitle = pair.a.title || '未命名';
         const bTitle = pair.b.title || '未命名';
@@ -235,23 +381,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const bAgo = daysAgoText(pair.b.created_at);
         const aTags = (pair.a.tags || []).join('、') || '无标签';
         const bTags = (pair.b.tags || []).join('、') || '无标签';
-        recommendations.push({
-          id: recId,
-          type: 'semantic',
-          title: `${aTitle} ↔ ${bTitle}`,
-          reason: `「${aTitle}」（${aAgo}，标签：${aTags}）与「${bTitle}」（${bAgo}，标签：${bTags}）词面完全不同，但语义相似度高达 ${simPct}%——你很可能在两次记录中谈论同一件事的两个侧面`,
-          action: `对比这两条记录，找到它们共同的底层主题（例如合并成一个知识节点），让分散的观察互相印证`,
-          targetType: 'captured',
-          targetId: pair.a.id,
-          secondaryTargetId: pair.b.id,
-          evidence: [captureEvidence(pair.a as CapturedRow), captureEvidence(pair.b as CapturedRow)],
+        candidates.push({
+          item: {
+            id: recId,
+            type: 'semantic',
+            title: `${aTitle} ↔ ${bTitle}`,
+            reason: `「${aTitle}」（${aAgo}，标签：${aTags}）与「${bTitle}」（${bAgo}，标签：${bTags}）词面完全不同，但语义相似度高达 ${simPct}%——你很可能在两次记录中反复想的是同一件事`,
+            action: `这两条记录其实指向你一直在琢磨的同一个主题——把「${aTitle}」和「${bTitle}」放在一起看，可能帮你把这个想法理清楚，而不是只记了两条孤立笔记`,
+            targetType: 'captured',
+            targetId: pair.a.id,
+            secondaryTargetId: pair.b.id,
+            evidence: [captureEvidence(pair.a as CapturedRow), captureEvidence(pair.b as CapturedRow)],
+          },
+          semantic: pair.similarity,
+          keyword: kwSignal(`${aTitle} ${bTitle}`),
+          graph: 0,
+          base: 0.3,
         });
       }
     }
 
-    // --- Rule 3: graph_bridge — 图谱二跳传导链 ---
-    if (recommendations.length < MAX_RECOMMENDATIONS && nodes.length > 0) {
-      const allBridges = findGraphBridgePaths(signalCaptured, graphIndex, MAX_RECOMMENDATIONS * 3);
+    // --- Rule 3: graph_bridge — P7 Personalized PageRank 传导链 ---
+    if (nodes.length > 0) {
+      const allBridges = findPprBridgePaths(signalCaptured, graphIndex, MAX_RECOMMENDATIONS * 3);
       // 多样性：同一捕获最多 2 条桥、同一中间节点只推一次，避免 5 条桥全指向同一记录
       const seenMid = new Set<string>();
       const perCapture = new Map<string, number>();
@@ -265,37 +417,73 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         bridgePaths.push(bp);
       }
       for (const bp of bridgePaths) {
-        if (recommendations.length >= MAX_RECOMMENDATIONS) break;
         const recId = `bridge-${bp.captureA.id}-${bp.captureB.id}`;
-        if (dismissedIds.includes(recId)) continue;
-      // 传导链两端/中间必须是实质节点，跳过「计划→任务→效率」这类停用词链
-      const bridgeNames = [bp.nodeA.name, bp.nodeB.name];
-      if (bp.midNode) bridgeNames.push(bp.midNode.name);
-      if (bridgeNames.some((n) => isTrivialNodeName(n))) continue;
+        // 传导链两端/中间必须是实质节点，跳过「计划→任务→效率」这类停用词链
+        const bridgeNames = [bp.nodeA.name, bp.nodeB.name];
+        if (bp.midNode) bridgeNames.push(bp.midNode.name);
+        if (bridgeNames.some((n) => isTrivialNodeName(n))) continue;
         const chain = chainText(bp.nodeA.name, bp.midNode?.name || null, bp.nodeB.name);
-        recommendations.push({
-          id: recId,
-          type: 'graph_bridge',
-          title: `${bp.captureA.title} → ${bp.captureB.title}`,
-          reason: `你的图谱里存在一条传导链 ${chain}：「${bp.captureA.title}」落在链的一端，「${bp.captureB.title}」落在另一端——两条看起来无关的记录，其实被同一个中间主题串起来了`,
-          action: bp.midNode
-            ? `打开图谱聚焦「${bp.midNode.name}」节点，看看它还在连接哪些内容，这可能是一条你尚未意识到的因果路径`
-            : `打开图谱查看「${bp.nodeA.name}」与「${bp.nodeB.name}」的直接关联，评估是否值得深入`,
-          targetType: 'captured',
-          targetId: bp.captureA.id,
-          secondaryTargetId: bp.captureB.id,
-          nodeId: (bp.midNode || bp.nodeA).id,
-          evidence: [
-            captureEvidence(bp.captureA),
-            captureEvidence(bp.captureB),
-            nodeEvidence(bp.midNode || bp.nodeA),
-          ],
+        candidates.push({
+          item: {
+            id: recId,
+            type: 'graph_bridge',
+            title: `${bp.captureA.title} → ${bp.captureB.title}`,
+            reason: `你的图谱里存在一条传导链 ${chain}：「${bp.captureA.title}」落在链的一端，「${bp.captureB.title}」落在另一端——两条看起来无关的记录，其实被同一个中间主题串起来了`,
+            action: bp.midNode
+              ? `这两条记录看似无关，其实被「${bp.midNode.name}」悄悄串起来——你可能是从「${bp.nodeA.name}」一路想到了「${bp.nodeB.name}」，这个思维链条值得留意`
+              : `「${bp.nodeA.name}」和「${bp.nodeB.name}」之间可能有你没想到的联系，值得深入想想这对你意味着什么`,
+            targetType: 'captured',
+            targetId: bp.captureA.id,
+            secondaryTargetId: bp.captureB.id,
+            nodeId: (bp.midNode || bp.nodeA).id,
+            evidence: [
+              captureEvidence(bp.captureA),
+              captureEvidence(bp.captureB),
+              nodeEvidence(bp.midNode || bp.nodeA),
+            ],
+          },
+          semantic: 0,
+          keyword: kwSignal(`${bp.captureA.title || ''} ${bp.captureB.title || ''}`),
+          graph: Math.min(1, bp.pprScore * 5),
+          base: 0.2,
+        });
+      }
+    }
+
+    // --- Rule 3.5: implicit — 隐含关联预测（图谱结构：共同邻居重叠但未直接连）---
+    if (nodes.length > 0 && links.length > 0) {
+      const idToName = new Map<string, string>(nodes.map((n) => [n.id, n.name]));
+      const nameLinks = links
+        .map((l) => ({
+          source: idToName.get(l.source) || l.source,
+          target: idToName.get(l.target) || l.target,
+        }))
+        .filter((l) => l.source && l.target);
+      const pairs = findImplicitPairs(nodes.map((n) => n.name), nameLinks, { maxPairs: 2 });
+      for (const p of pairs) {
+        const nodeA = nodes.find((n) => n.name === p.a);
+        candidates.push({
+          item: {
+            id: `implicit-${p.a}-${p.b}`,
+            type: 'graph_bridge',
+            title: `「${p.a}」↔「${p.b}」`,
+            reason: `图谱里「${p.a}」和「${p.b}」连着 ${p.common} 个相同的概念，但你没有把它们直接关联——它们很可能在你心里同属一件事，只是还没被串起来`,
+            action: `主动把「${p.a}」和「${p.b}」放在一起想想，这个联结可能是你还没意识到的洞察`,
+            targetType: 'node',
+            targetId: nodeA?.id || p.a,
+            nodeId: nodeA?.id,
+            evidence: nodeA ? [nodeEvidence(nodeA)] : [],
+          },
+          semantic: 0,
+          keyword: 0,
+          graph: 0.4,
+          base: 0.15,
         });
       }
     }
 
     // --- Rule 4: forming — 近期升温/新生的主题（标签趋势）---
-    if (recommendations.length < MAX_RECOMMENDATIONS) {
+    {
       const trends: ThemeTrend[] = computeThemeTrends(signalCaptured, TREND_BOUNDARY_DAYS, 2);
       // 只看升温与新生的主题；近窗至少出现 2 次才值得推
       const activeTrends = trends.filter((t) => {
@@ -312,9 +500,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
 
       for (const t of activeTrends) {
-        if (recommendations.length >= MAX_RECOMMENDATIONS) break;
         const recId = `forming-${t.name}`;
-        if (dismissedIds.includes(recId)) continue;
         const matchingNode = nodes.find((n) =>
           n.name.toLowerCase().includes(t.name.toLowerCase()) ||
           n.kind.toLowerCase().includes(t.name.toLowerCase()),
@@ -326,52 +512,100 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const trendHint = t.direction === 'new'
           ? `这个话题是最近${TREND_BOUNDARY_DAYS}天新冒出来的，共 ${t.recent} 条`
           : `这个话题正在升温：近${TREND_BOUNDARY_DAYS}天 ${t.recent} 次，而更早只有 ${t.older} 次`;
-        recommendations.push({
-          id: recId,
-          type: 'forming',
-          title: `主题「${t.name}」`,
-          reason: `${trendHint}（${captureExamples}）。连续出现的主题通常意味着你生活中正在发生值得关注的变化`,
-          action: matchingNode
-            ? `打开图谱深入探索「${t.name}」相关节点，把最近的相关捕获连到它上面，形成完整脉络`
-            : `为「${t.name}」建一个知识节点，把 ${tagCaptures.map((c) => `「${c.title}」`).join('、')} 关联起来，后续记录会自然挂靠`,
-          targetType: matchingNode ? 'node' : 'captured',
-          targetId: matchingNode ? matchingNode.id : (tagCaptures[0]?.id || ''),
-          nodeId: matchingNode?.id,
-          evidence: tagCaptures.map(captureEvidence),
+        candidates.push({
+          item: {
+            id: recId,
+            type: 'forming',
+            title: `主题「${t.name}」`,
+            reason: `${trendHint}（${captureExamples}）。连续出现说明你可能正在重新关注这件事，值得留意它对你生活的意义`,
+            action: matchingNode
+              ? `「${t.name}」最近在冒头——回顾这几条新记录，想想是不是生活的某个转折，值得记下背后原因`
+              : `「${t.name}」是最近新出现的关注点（${tagCaptures.map((c) => `「${c.title}」`).join('、')}）——像不像你最近在想的事？可以再补充一条，让脉络更清晰`,
+            targetType: matchingNode ? 'node' : 'captured',
+            targetId: matchingNode ? matchingNode.id : (tagCaptures[0]?.id || ''),
+            nodeId: matchingNode?.id,
+            evidence: tagCaptures.map(captureEvidence),
+          },
+          semantic: 0,
+          keyword: kwSignal(t.name),
+          graph: 0,
+          base: 0.6,
         });
       }
     }
 
     // --- Rule 5: related — 共享标签（兜底，低优先级）---
-    if (recommendations.length < MAX_RECOMMENDATIONS) {
+    {
       const recentCapture = signalCaptured.slice(0, 10);
-      for (let i = 0; i < recentCapture.length && recommendations.length < MAX_RECOMMENDATIONS; i++) {
-        for (let j = i + 1; j < recentCapture.length && recommendations.length < MAX_RECOMMENDATIONS; j++) {
+      for (let i = 0; i < recentCapture.length; i += 1) {
+        for (let j = i + 1; j < recentCapture.length; j += 1) {
           const a = recentCapture[i];
           const b = recentCapture[j];
           if (!Array.isArray(a.tags) || !Array.isArray(b.tags)) continue;
           const sharedTags = a.tags.filter((t) => b.tags.includes(t));
           if (sharedTags.length === 0) continue;
-          const recId = `related-${a.id}-${b.id}`;
-          if (dismissedIds.includes(recId)) continue;
-          recommendations.push({
-            id: recId,
-            type: 'related',
-            title: `${a.title} ↔ ${b.title}`,
-            reason: `「${a.title}」（${daysAgoText(a.created_at)}）与「${b.title}」（${daysAgoText(b.created_at)}）共享标签「${sharedTags.slice(0, 3).join('、')}」，可能属于同一主题`,
-            action: `把这两条记录连起来看：${sharedTags[0]} 是否有一个贯穿始终的主线值得提炼成节点？`,
-            targetType: 'captured',
-            targetId: a.id,
-            secondaryTargetId: b.id,
-            evidence: [captureEvidence(a), captureEvidence(b)],
+          candidates.push({
+            item: {
+              id: `related-${a.id}-${b.id}`,
+              type: 'related',
+              title: `${a.title} ↔ ${b.title}`,
+              reason: `「${a.title}」（${daysAgoText(a.created_at)}）与「${b.title}」（${daysAgoText(b.created_at)}）共享标签「${sharedTags.slice(0, 3).join('、')}」，可能属于同一主题`,
+              action: `这几条（「${a.title}」「${b.title}」）都在说「${sharedTags[0]}」——你可能正在形成对这个主题的看法，值得把它们放在一起回顾，而不是各记各的`,
+              targetType: 'captured',
+              targetId: a.id,
+              secondaryTargetId: b.id,
+              evidence: [captureEvidence(a), captureEvidence(b)],
+            },
+            semantic: 0,
+            keyword: kwSignal(`${a.title || ''} ${b.title || ''}`),
+            graph: 0,
+            base: 0.2,
           });
         }
       }
     }
 
+    // P5 统一打分：三信号加权；dismissed 负权重 -1.0、点击正信号 +0.5
+    const scored = candidates
+      .map((c) => {
+        let score = candidateScore(c);
+        if (dismissedSet.has(c.item.id)) score -= 1.0;
+        if (clickedSet.has(c.item.id)) score += 0.5;
+        return { ...c, score };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    // 类型配额：每种有候选的类型至少保留最高分 1 条（P5 语义对与 forming 不互斥），
+    // 其余按分数填充到 MAX_RECOMMENDATIONS
+    const typeBest = new Map<string, (typeof scored)[number]>();
+    for (const s of scored) {
+      if (!typeBest.has(s.item.type)) typeBest.set(s.item.type, s);
+    }
+    const picked: (typeof scored)[number][] = [];
+    const pickedIds = new Set<string>();
+    // 降低重复性：每类型最多 2 条（避免某一类（尤其 semantic）刷屏，让推荐类型多样化）
+    const MAX_PER_TYPE = 2;
+    const typeCount = new Map<string, number>();
+    const push = (s: (typeof scored)[number]) => {
+      if (picked.length >= MAX_RECOMMENDATIONS) return;
+      if (pickedIds.has(s.item.id)) return;
+      const t = s.item.type;
+      if ((typeCount.get(t) || 0) >= MAX_PER_TYPE) return;
+      picked.push(s);
+      pickedIds.add(s.item.id);
+      typeCount.set(t, (typeCount.get(t) || 0) + 1);
+    };
+    for (const s of typeBest.values()) push(s);
+    for (const s of scored) push(s);
+
+    const pickedRecommendations = picked.slice(0, MAX_RECOMMENDATIONS).map((s) => s.item);
+
+    // 用 LLM 针对性生成更自然的推荐理由（短超时 + 失败保留确定性 reason）
+    const recommendations = await enrichRecommendationReasons(pickedRecommendations);
+
     res.status(200).json({
       ok: true,
-      recommendations: recommendations.slice(0, MAX_RECOMMENDATIONS),
+      recommendations,
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';

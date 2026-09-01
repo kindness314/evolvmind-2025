@@ -288,3 +288,184 @@ export function chainText(nodeA: string, mid: string | null, nodeB: string): str
   if (!mid) return `「${nodeA}」⇄「${nodeB}」`;
   return `「${nodeA}」→「${mid}」→「${nodeB}」`;
 }
+
+// ---------------------------------------------------------------------------
+// Personalized PageRank（P7 图桥升级，HippoRAG 思路）
+// ---------------------------------------------------------------------------
+
+/**
+ * Personalized PageRank：以 seedNodeIds 为种子（teleport 分布），
+ * 沿图邻接迭代传播概率，返回每个节点的 PPR 分数。
+ * 分数高的节点 = 从种子出发最容易被"传导"到达的节点。
+ */
+export function personalizedPageRank(
+  index: GraphIndex,
+  seedNodeIds: string[],
+  opts: { alpha?: number; iterations?: number } = {},
+): Map<string, number> {
+  const { alpha = 0.85, iterations = 20 } = opts;
+  const nodeIds = [...index.nodeById.keys()];
+  if (nodeIds.length === 0) return new Map();
+
+  // 初始分布：种子均分，其余为 0
+  const rank = new Map<string, number>();
+  for (const id of nodeIds) rank.set(id, 0);
+  const teleport = new Map<string, number>();
+  const seedSum = seedNodeIds.length || 1;
+  for (const id of seedNodeIds) {
+    if (index.nodeById.has(id)) {
+      rank.set(id, 1 / seedSum);
+      teleport.set(id, 1 / seedSum);
+    }
+  }
+
+  const outDeg = new Map<string, number>();
+  for (const [id, neighbors] of index.adj) {
+    outDeg.set(id, neighbors.size);
+  }
+
+  for (let iter = 0; iter < iterations; iter += 1) {
+    const next = new Map<string, number>();
+    for (const id of nodeIds) next.set(id, (1 - alpha) * (teleport.get(id) || 0));
+
+    for (const [from, neighbors] of index.adj) {
+      const deg = outDeg.get(from) || 1;
+      const share = (alpha * (rank.get(from) || 0)) / deg;
+      for (const to of neighbors) {
+        next.set(to, (next.get(to) || 0) + share);
+      }
+    }
+
+    // 归一化（防浮点漂移）
+    let sum = 0;
+    for (const v of next.values()) sum += v;
+    if (sum > 0) {
+      for (const id of nodeIds) next.set(id, (next.get(id) || 0) / sum);
+    }
+    for (const id of nodeIds) rank.set(id, next.get(id) || 0);
+  }
+
+  return rank;
+}
+
+/**
+ * PPR 图桥：以捕获 A 的节点为种子跑 PPR，用 PPR 分数给二跳桥路径排序。
+ * 返回分数从高到低的路径——传导链命中真实因果链的比例应高于朴素二跳遍历。
+ */
+export function findPprBridgePaths(
+  captured: CapturedRow[],
+  index: GraphIndex,
+  maxResults = 10,
+): Array<BridgePath & { pprScore: number }> {
+  // 先找候选二跳桥（复用朴素遍历找路径结构）
+  const base = findGraphBridgePaths(captured, index, maxResults * 3);
+  if (base.length === 0) return [];
+
+  // 每个捕获 A 的 PPR 结果缓存（同一 A 多条路径只算一次）
+  const pprCache = new Map<string, Map<string, number>>();
+  const pprFor = (seedIds: string[]): Map<string, number> => {
+    const key = [...seedIds].sort().join('\u0000');
+    const cached = pprCache.get(key);
+    if (cached) return cached;
+    const result = personalizedPageRank(index, seedIds, { alpha: 0.85, iterations: 15 });
+    pprCache.set(key, result);
+    return result;
+  };
+
+  const scored = base.map((bp) => {
+    const seeds = index.capturedToNodes.get(bp.captureA.id);
+    const ppr = seeds && seeds.size > 0 ? pprFor([...seeds]) : new Map<string, number>();
+    // 传导强度 = 中间节点（或 B 端节点）在 A 种子 PPR 下的分数
+    const targetId = bp.midNode ? bp.midNode.id : bp.nodeB.id;
+    return { ...bp, pprScore: ppr.get(targetId) || 0 };
+  });
+
+  return scored.sort((a, b) => b.pprScore - a.pprScore).slice(0, maxResults);
+}
+
+// ---------------------------------------------------------------------------
+// 图谱驱动预测（2026-09）：投入深度 + 隐含关联 —— 纯函数可单测
+// ---------------------------------------------------------------------------
+
+export interface DepthNode {
+  name: string;
+  sourceCount: number;
+}
+
+export interface DepthProfile {
+  /** 记录多但图里无关联 → "只记没思考"（浅） */
+  shallow: Array<{ name: string; sourceCount: number }>;
+  /** 图里高度关联（枢纽）→ "在深入"（深） */
+  deep: Array<{ name: string; degree: number; sourceCount: number }>;
+}
+
+/** 投入深度预测：按"记录数（sourceCount）vs 关联度（degree）"判定每个概念是浅（只记没思考）还是深（在深入/枢纽）。 */
+export function computeDepthProfile(
+  nodes: DepthNode[],
+  links: Array<{ source: string; target: string }>,
+  opts: { shallowMinSource?: number; deepMinDegree?: number } = {},
+): DepthProfile {
+  const { shallowMinSource = 2, deepMinDegree = 3 } = opts;
+  const degree = new Map<string, number>();
+  for (const l of links) {
+    degree.set(l.source, (degree.get(l.source) || 0) + 1);
+    degree.set(l.target, (degree.get(l.target) || 0) + 1);
+  }
+  const shallow: DepthProfile['shallow'] = [];
+  const deep: DepthProfile['deep'] = [];
+  for (const n of nodes) {
+    const d = degree.get(n.name) || 0;
+    if (n.sourceCount >= shallowMinSource && d === 0) shallow.push({ name: n.name, sourceCount: n.sourceCount });
+    if (d >= deepMinDegree) deep.push({ name: n.name, degree: d, sourceCount: n.sourceCount });
+  }
+  // 深：按 degree 降序
+  deep.sort((a, b) => b.degree - a.degree);
+  return { shallow, deep };
+}
+
+export interface ImplicitPair {
+  a: string;
+  b: string;
+  /** 公共邻居数 */
+  common: number;
+}
+
+/**
+ * 隐含关联预测：结构上"接近"但没直接连的概念对（公共邻居 >= minCommon）。
+ * 原理：A、B 连着多个相同的其它概念，很可能在用户心里同属一件事，只是没显式关联。
+ */
+export function findImplicitPairs(
+  names: string[],
+  links: Array<{ source: string; target: string }>,
+  opts: { minCommon?: number; maxPairs?: number; avoid?: Set<string> } = {},
+): ImplicitPair[] {
+  const { minCommon = 2, maxPairs = 3, avoid = new Set() } = opts;
+  const neigh = new Map<string, Set<string>>();
+  for (const l of links) {
+    if (!neigh.has(l.source)) neigh.set(l.source, new Set());
+    neigh.get(l.source)!.add(l.target);
+    if (!neigh.has(l.target)) neigh.set(l.target, new Set());
+    neigh.get(l.target)!.add(l.source);
+  }
+  const direct = new Set<string>();
+  for (const l of links) {
+    direct.add(`${l.source}\u0000${l.target}`);
+    direct.add(`${l.target}\u0000${l.source}`);
+  }
+  const candidates = names.filter((n) => neigh.has(n) && !avoid.has(n)).slice(0, 60);
+  const pairs: ImplicitPair[] = [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    for (let j = i + 1; j < candidates.length; j += 1) {
+      const a = candidates[i];
+      const b = candidates[j];
+      if (direct.has(`${a}\u0000${b}`)) continue;
+      const na = neigh.get(a) || new Set<string>();
+      const nb = neigh.get(b) || new Set<string>();
+      let common = 0;
+      for (const x of na) if (nb.has(x)) common += 1;
+      if (common >= minCommon) pairs.push({ a, b, common });
+      if (pairs.length >= maxPairs) return pairs;
+    }
+  }
+  return pairs;
+}

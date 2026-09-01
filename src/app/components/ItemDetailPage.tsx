@@ -12,23 +12,29 @@ interface ItemDetailPageProps {
 
 interface ItemDetail {
   id: string;
-  type: 'text' | 'photo' | 'audio' | 'import';
+  /** 'note' 为 O1 前的存量文字记录类型，与 'text' 同义展示 */
+  type: 'text' | 'photo' | 'audio' | 'import' | 'note';
   title: string;
   content: string;
-  tags: string[];
   summary: string;
   note: string | null;
-  created_at: string;
+  tags: string[];
   is_pinned: boolean;
-  /** O1 处理状态; 存量数据为 undefined */
+  created_at: string;
   processing_status?: string;
   embedding_status?: string;
   graph_status?: string;
   processing_error?: string;
+  /** O3: 文件生命周期 —— 存储对象路径与元数据；旧数据无此列时从 content 推导/回退 */
+  storage_path?: string | null;
+  file_name?: string | null;
+  mime_type?: string | null;
+  file_size?: number | null;
 }
 
 const typeIcons = {
   text: <FileText className="w-5 h-5 text-blue-500" />,
+  note: <FileText className="w-5 h-5 text-blue-500" />,
   photo: <ImageIcon className="w-5 h-5 text-green-500" />,
   audio: <Mic className="w-5 h-5 text-purple-500" />,
   import: <File className="w-5 h-5 text-orange-500" />
@@ -36,6 +42,7 @@ const typeIcons = {
 
 const typeLabels = {
   text: '文字记录',
+  note: '文字记录',
   photo: '拍照提取',
   audio: '录音转写',
   import: '导入文件'
@@ -46,6 +53,9 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
   const [loading, setLoading] = useState(true);
   const [isPinning, setIsPinning] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  // O3: 按 storage_path 动态生成 signed URL（60 分钟窗口，过期后重进详情会重新生成）；
+  // 旧数据无 storage_path 时 content 本身就是旧 URL，直接回退使用
+  const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
@@ -61,7 +71,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
     try {
       const { data, error } = await supabase
         .from('captured_info')
-        .select('*')
+        .select('id,type,title,content,summary,note,tags,is_pinned,created_at,processing_status,graph_status,embedding_status,processing_error,storage_path,file_name,mime_type,file_size')
         .eq('id', itemId)
         .single();
 
@@ -84,6 +94,28 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadFileUrl = async () => {
+      if (!item?.storage_path) {
+        setFileUrl(null);
+        return;
+      }
+      try {
+        const { data, error } = await supabase.storage
+          .from('captured-files')
+          .createSignedUrl(item.storage_path, 60 * 60);
+        if (!cancelled && !error && data?.signedUrl) setFileUrl(data.signedUrl);
+      } catch {
+        if (!cancelled) setFileUrl(null);
+      }
+    };
+    void loadFileUrl();
+    return () => {
+      cancelled = true;
+    };
+  }, [item?.storage_path]);
 
   const handleRetryProcessing = async () => {
     if (!item) return;
@@ -148,12 +180,13 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
     
     setIsDeleting(true);
     try {
-      // 1. 如果是云端存储的文件，尝试从 Storage 删除 (可选，这里为简化主要删除数据库记录)
-      if (item.content.startsWith('http')) {
-        const filePath = item.content.split('captured-files/')[1]?.split('?')[0];
-        if (filePath) {
-          await supabase.storage.from('captured-files').remove([filePath]);
-        }
+      // O3: 删除优先使用 storage_path（content 已不再存 URL）；旧数据回退到 content 推导
+      const legacyFilePath = item.content.startsWith('http')
+        ? item.content.split('captured-files/')[1]?.split('?')[0]
+        : null;
+      const filePath = item.storage_path || legacyFilePath;
+      if (filePath) {
+        await supabase.storage.from('captured-files').remove([filePath]);
       }
 
       // 2. 删除数据库记录
@@ -187,8 +220,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
         <p className="text-gray-500 mb-4">未找到该信息或已被删除</p>
         <button
           onClick={onBack}
-          className="px-6 py-2 bg-blue-500 text-white text-sm"
-          style={{ borderRadius: '4px' }}
+          className="px-6 py-2 bg-brand text-white text-sm rounded-lg"
         >
           返回首页
         </button>
@@ -203,8 +235,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
         <motion.button
           whileTap={{ scale: 0.95 }}
           onClick={onBack}
-          className="p-2 hover:bg-gray-100 transition-colors"
-          style={{ borderRadius: '4px' }}
+          className="p-2 hover:bg-gray-100 transition-colors rounded-lg"
         >
           <ArrowLeft className="w-5 h-5 text-gray-600" />
         </motion.button>
@@ -214,11 +245,10 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
             whileTap={{ scale: 0.95 }}
             onClick={handleTogglePin}
             disabled={isPinning}
-            className={`p-2 transition-all ${item.is_pinned ? 'text-blue-500 bg-blue-50' : 'text-gray-400 hover:bg-gray-100'}`}
-            style={{ borderRadius: '4px' }}
+            className={`p-2 transition-all ${item.is_pinned ? 'text-brand bg-brand-soft' : 'text-gray-400 hover:bg-gray-100'} rounded-lg`}
             title={item.is_pinned ? '取消置顶' : '置顶'}
           >
-            {isPinning ? <Loader2 className="w-5 h-5 animate-spin" /> : <Pin className={`w-5 h-5 ${item.is_pinned ? 'fill-blue-500' : ''}`} />}
+            {isPinning ? <Loader2 className="w-5 h-5 animate-spin" /> : <Pin className={`w-5 h-5 ${item.is_pinned ? 'fill-brand' : ''}`} />}
           </motion.button>
 
           <motion.button
@@ -229,8 +259,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
               setShowEdit(true);
             }}
             disabled={isDeleting || isSavingEdit}
-            className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-all"
-            style={{ borderRadius: '4px' }}
+            className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-all rounded-lg"
             title="编辑"
           >
             <Pencil className="w-5 h-5" />
@@ -240,8 +269,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
             whileTap={{ scale: 0.95 }}
             onClick={() => setShowDeleteConfirm(true)}
             disabled={isDeleting}
-            className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 transition-all"
-            style={{ borderRadius: '4px' }}
+            className="p-2 text-gray-400 hover:text-danger hover:bg-red-50 transition-all rounded-lg"
             title="删除"
           >
             <Trash2 className="w-5 h-5" />
@@ -264,7 +292,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
               <span className="text-xs text-gray-400 ml-auto">{new Date(item.created_at).toLocaleString()}</span>
             </div>
             {(item.processing_status || item.graph_status || item.embedding_status) && (
-              <div className="mt-3 p-3 bg-gray-50 border border-gray-200 flex items-center gap-2 flex-wrap" style={{ borderRadius: '4px' }}>
+              <div className="mt-3 p-3 bg-card border border-gray-100 flex items-center gap-2 flex-wrap rounded-xl shadow-card">
                 {(() => {
                   // O1: 聚合子状态判断整体; 任一子步骤失败即失败, 避免被部分成功掩盖
                   const statuses = [item.graph_status, item.embedding_status].filter(Boolean);
@@ -283,16 +311,15 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                     const recoverOnly = !graphActionable && !embedActionable;
                     return (
                       <>
-                        <AlertTriangle className="w-4 h-4 text-red-500" />
-                        <span className="text-xs text-red-700">处理失败</span>
+                        <AlertTriangle className="w-4 h-4 text-danger" />
+                        <span className="text-xs text-danger">处理失败</span>
                         {item.processing_error && (
-                          <span className="text-[11px] text-red-500 break-all flex-1 min-w-0">{item.processing_error}</span>
+                          <span className="text-[11px] text-danger/80 break-all flex-1 min-w-0">{item.processing_error}</span>
                         )}
                         {showAction && (
                           <button
                             onClick={handleRetryProcessing}
-                            className="flex-none px-2 py-1 bg-red-600 text-white text-xs hover:bg-red-700 transition-colors"
-                            style={{ borderRadius: '4px' }}
+                            className="flex-none px-2 py-1 bg-danger text-white text-xs hover:bg-danger/90 transition-colors rounded-lg"
                           >
                             重试
                           </button>
@@ -300,8 +327,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                         {!showAction && recoverOnly && (
                           <button
                             onClick={handleRetryProcessing}
-                            className="flex-none px-2 py-1 bg-amber-600 text-white text-xs hover:bg-amber-700 transition-colors"
-                            style={{ borderRadius: '4px' }}
+                            className="flex-none px-2 py-1 bg-warning text-white text-xs hover:bg-warning/90 transition-colors rounded-lg"
                           >
                             恢复
                           </button>
@@ -312,13 +338,12 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                   if (anyProcessing) {
                     return (
                       <>
-                        <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
-                        <span className="text-xs text-blue-700">处理中</span>
+                        <Loader2 className="w-4 h-4 text-brand animate-spin" />
+                        <span className="text-xs text-brand-strong">处理中</span>
                         {showAction && (
                           <button
                             onClick={handleRetryProcessing}
-                            className="flex-none px-2 py-1 bg-blue-600 text-white text-xs hover:bg-blue-700 transition-colors"
-                            style={{ borderRadius: '4px' }}
+                            className="flex-none px-2 py-1 bg-brand text-white text-xs hover:bg-brand-strong transition-colors rounded-lg"
                           >
                             补做
                           </button>
@@ -329,8 +354,8 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                   if (allDone) {
                     return (
                       <>
-                        <Check className="w-4 h-4 text-green-600" />
-                        <span className="text-xs text-green-700">已完成</span>
+                        <Check className="w-4 h-4 text-success" />
+                        <span className="text-xs text-success">已完成</span>
                       </>
                     );
                   }
@@ -339,8 +364,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                       <span className="text-xs text-gray-500">待处理</span>
                       <button
                         onClick={handleRetryProcessing}
-                        className="flex-none px-2 py-1 bg-gray-600 text-white text-xs hover:bg-gray-700 transition-colors"
-                        style={{ borderRadius: '4px' }}
+                        className="flex-none px-2 py-1 bg-gray-600 text-white text-xs hover:bg-gray-700 transition-colors rounded-lg"
                       >
                         处理
                       </button>
@@ -352,29 +376,29 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
           </div>
 
           {/* 媒体预览 */}
-          {item.type === 'photo' && item.content.startsWith('http') && (
+          {item.type === 'photo' && (fileUrl || item.content.startsWith('http')) && (
             <div className="mb-6 rounded overflow-hidden border border-gray-100 shadow-sm bg-gray-50">
-              <img src={item.content} alt={item.title} className="w-full h-auto object-contain max-h-96 mx-auto" />
+              <img src={fileUrl ?? item.content} alt={item.title} className="w-full h-auto object-contain max-h-96 mx-auto" />
             </div>
           )}
           
-          {item.type === 'audio' && item.content.startsWith('http') && (
-            <div className="mb-6 p-4 bg-gray-50 border border-gray-200" style={{ borderRadius: '4px' }}>
+          {item.type === 'audio' && (fileUrl || item.content.startsWith('http')) && (
+            <div className="mb-6 p-4 bg-gray-50 border border-gray-100 rounded-xl">
               <audio controls className="w-full h-10">
-                <source src={item.content} />
-                您的浏览器不支持音频播放。
+                <source src={fileUrl ?? item.content} />
+                <span className="text-xs text-gray-500">音频文件：{item.file_name || '播放中...'}</span>
               </audio>
             </div>
           )}
 
           {/* AI 摘要 */}
           {item.summary && (
-            <div className="mb-8 p-4 bg-blue-50 border-l-4 border-blue-500" style={{ borderRadius: '0 4px 4px 0' }}>
+            <div className="mb-8 p-4 bg-brand-soft border-l-4 border-brand rounded-r-xl">
               <div className="flex items-center gap-2 mb-2">
-                <Sparkles className="w-4 h-4 text-blue-500" />
-                <span className="text-xs font-bold text-blue-600 uppercase tracking-wider">AI 智能摘要</span>
+                <Sparkles className="w-4 h-4 text-brand" />
+                <span className="text-xs font-bold text-brand-strong uppercase tracking-wider">AI 智能摘要</span>
               </div>
-              <p className="text-sm text-blue-800 leading-relaxed">{item.summary}</p>
+              <p className="text-sm text-brand-strong leading-relaxed">{item.summary}</p>
             </div>
           )}
 
@@ -390,7 +414,9 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
           <div className="mb-8">
             <h3 className="text-sm font-bold text-gray-900 mb-3 border-b border-gray-100 pb-2">原始内容</h3>
             <div className="text-base text-gray-700 leading-relaxed whitespace-pre-wrap">
-              {item.type === 'text' ? item.content : `[${typeLabels[item.type]}] ${item.content.split('/').pop()?.split('?')[0]}`}
+              {item.type === 'text' || item.type === 'note'
+                ? item.content
+                : `[${typeLabels[item.type]}] ${item.file_name || item.content.split('/').pop()?.split('?')[0]}`}
             </div>
           </div>
 
@@ -402,8 +428,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                 {item.tags.map((tag, idx) => (
                   <span
                     key={idx}
-                    className="px-3 py-1 bg-gray-100 text-gray-600 text-xs font-medium"
-                    style={{ borderRadius: '4px' }}
+                    className="px-3 py-1 bg-gray-100 text-gray-600 text-xs font-medium rounded-full"
                   >
                     #{tag}
                   </span>
@@ -429,10 +454,9 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="relative w-full max-w-xs bg-white p-6 shadow-2xl"
-              style={{ borderRadius: '4px' }}
+              className="relative w-full max-w-xs bg-white p-6 shadow-float rounded-2xl"
             >
-              <div className="flex items-center gap-3 mb-4 text-red-500">
+              <div className="flex items-center gap-3 mb-4 text-danger">
                 <AlertTriangle className="w-6 h-6" />
                 <h3 className="text-lg font-bold">确认删除</h3>
               </div>
@@ -442,8 +466,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowDeleteConfirm(false)}
-                  className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors"
-                  style={{ borderRadius: '4px' }}
+                  className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors rounded-lg"
                 >
                   取消
                 </button>
@@ -453,8 +476,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                     handleDelete();
                   }}
                   disabled={isDeleting}
-                  className="flex-1 px-4 py-2.5 bg-red-500 text-white text-sm font-medium hover:bg-red-600 transition-colors flex items-center justify-center gap-2"
-                  style={{ borderRadius: '4px' }}
+                  className="flex-1 px-4 py-2.5 bg-danger text-white text-sm font-medium hover:bg-danger/90 transition-colors flex items-center justify-center gap-2 rounded-lg"
                 >
                   {isDeleting && <Loader2 className="w-4 h-4 animate-spin" />}
                   确认删除
@@ -480,19 +502,17 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="relative w-full max-w-sm bg-white p-6 shadow-2xl"
-              style={{ borderRadius: '4px' }}
+              className="relative w-full max-w-sm bg-white p-6 shadow-float rounded-2xl"
             >
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
-                  <Pencil className="w-5 h-5 text-blue-500" />
+                  <Pencil className="w-5 h-5 text-brand" />
                   <h3 className="text-base font-bold text-gray-900">编辑信息</h3>
                 </div>
                 <motion.button
                   whileTap={{ scale: 0.95 }}
                   onClick={() => setShowEdit(false)}
-                  className="p-2 hover:bg-gray-100 transition-colors"
-                  style={{ borderRadius: '4px' }}
+                  className="p-2 hover:bg-gray-100 transition-colors rounded-lg"
                 >
                   <X className="w-4 h-4 text-gray-600" />
                 </motion.button>
@@ -503,8 +523,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                 <input
                   value={draftTitle}
                   onChange={e => setDraftTitle(e.target.value)}
-                  className="w-full px-3 py-2 bg-white border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  style={{ borderRadius: '4px' }}
+                  className="w-full px-3 py-2 bg-white border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand rounded-lg"
                 />
               </div>
 
@@ -515,24 +534,21 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
                   onChange={e => setDraftNote(e.target.value)}
                   rows={4}
                   placeholder="添加你的备注..."
-                  className="w-full px-3 py-2 bg-white border border-gray-200 text-sm text-gray-900 placeholder:text-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  style={{ borderRadius: '4px' }}
+                  className="w-full px-3 py-2 bg-white border border-gray-200 text-sm text-gray-900 placeholder:text-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-brand rounded-lg"
                 />
               </div>
 
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowEdit(false)}
-                  className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors"
-                  style={{ borderRadius: '4px' }}
+                  className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors rounded-lg"
                 >
                   取消
                 </button>
                 <button
                   onClick={handleSaveEdit}
                   disabled={isSavingEdit}
-                  className="flex-1 px-4 py-2.5 bg-blue-500 text-white text-sm font-medium hover:bg-blue-600 transition-colors flex items-center justify-center gap-2 disabled:bg-blue-300"
-                  style={{ borderRadius: '4px' }}
+                  className="flex-1 px-4 py-2.5 bg-brand text-white text-sm font-medium hover:bg-brand-strong transition-colors flex items-center justify-center gap-2 disabled:bg-blue-300 rounded-lg"
                 >
                   {isSavingEdit ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                   保存

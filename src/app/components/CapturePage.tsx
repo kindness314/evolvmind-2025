@@ -7,20 +7,8 @@ import { generateEmbeddingForRow } from '../../lib/search';
 import { analyzeAndPersist } from '../../lib/process';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
+import { MAX_FILE_SIZE, isSupportedFile, type CaptureMode } from '../../lib/uploadValidation';
 
-type CaptureMode = 'text' | 'photo' | 'audio' | 'import' | null;
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const ALLOWED_DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'txt', 'md']);
-
-function isSupportedFile(file: File, mode: CaptureMode): boolean {
-  if (mode === 'photo') return file.type.startsWith('image/');
-  if (mode === 'audio') return file.type.startsWith('audio/');
-  if (mode === 'import') {
-    const extension = file.name.split('.').pop()?.toLowerCase() || '';
-    return ALLOWED_DOCUMENT_EXTENSIONS.has(extension);
-  }
-  return false;
-}
 
 interface GraphProcessResult {
   nodesProcessed: number;
@@ -172,8 +160,11 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
     setIsSaving(true);
     try {
       let finalContent = textInput;
+      let storageMeta: { storage_path?: string; file_name?: string; mime_type?: string | null; file_size?: number } = {};
 
       // Storage 路径首段必须是当前用户 scope；Demo 使用固定 scope。
+      // O3: content 不再存临时 signed URL（60 分钟过期后不可访问），
+      // 改存 storage_path 元数据，展示时动态生成 signed URL；存量旧行 content 仍是 URL（读取侧兼容）。
       if (file) {
         const fileExt = file.name.split('.').pop()?.toLowerCase() || 'bin';
         const { data: { user } } = await supabase.auth.getUser();
@@ -184,13 +175,15 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
         const { error: uploadError } = await supabase.storage
           .from('captured-files')
           .upload(filePath, file);
+        if (uploadError) throw uploadError;
 
-        const { data: signedUrlData, error: signedUrlError } = await supabase.storage
-          .from('captured-files')
-          .createSignedUrl(filePath, 60 * 60);
-        if (signedUrlError || !signedUrlData?.signedUrl) throw signedUrlError || new Error('无法生成文件访问链接');
-        finalContent = signedUrlData.signedUrl;
-
+        finalContent = `文件名: ${file.name}\n文件类型: ${file.type || '未知'}\n文件大小: ${file.size} bytes`;
+        storageMeta = {
+          storage_path: filePath,
+          file_name: file.name,
+          mime_type: file.type || null,
+          file_size: file.size,
+        };
       }
       // O1: 初始状态: 子步骤 pending, 保存后自动分析再推进; 原文先保存(不变量)
       const initialTitle = file
@@ -207,6 +200,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
           processing_status: 'processing',
           graph_status: 'pending',
           embedding_status: 'pending',
+          ...storageMeta,
         })
         .select('id')
         .single();
@@ -351,7 +345,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
               transition={{ type: 'spring', stiffness: 200, delay: 0.1 }}
               className="flex flex-col items-center pt-10 pb-6"
             >
-              <div className="w-16 h-16 bg-green-500 flex items-center justify-center mb-4" style={{ borderRadius: '4px' }}>
+              <div className="w-16 h-16 bg-success flex items-center justify-center mb-4 rounded-2xl shadow-card">
                 <CheckCircle2 className="w-10 h-10 text-white" />
               </div>
               <h2 className="text-lg font-medium text-gray-900">保存成功</h2>
@@ -363,17 +357,17 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
-              className="mx-4 mb-4 p-4 bg-blue-50 border-l-4 border-blue-500" style={{ borderRadius: '0 4px 4px 0' }}
+              className="mx-4 mb-4 p-4 bg-brand-soft border-l-4 border-brand rounded-r-xl"
             >
               <div className="flex items-center gap-2 mb-2">
-                <Sparkles className="w-4 h-4 text-blue-500" />
-                <span className="text-xs font-bold text-blue-600">AI 智能摘要</span>
+                <Sparkles className="w-4 h-4 text-brand" />
+                <span className="text-xs font-bold text-brand-strong">AI 智能摘要</span>
               </div>
               <h3 className="text-base font-medium text-gray-900 mb-2">{savedItem.title}</h3>
-              <p className="text-sm text-blue-800 leading-relaxed mb-3">{savedItem.summary}</p>
+              <p className="text-sm text-brand-strong leading-relaxed mb-3">{savedItem.summary}</p>
               <div className="flex flex-wrap gap-1.5">
                 {savedItem.keywords.map((kw, i) => (
-                  <span key={i} className="px-2 py-0.5 bg-white text-blue-600 text-xs border border-blue-200" style={{ borderRadius: '4px' }}>#{kw}</span>
+                  <span key={i} className="px-2 py-0.5 bg-white text-brand-strong text-xs border border-brand-200 rounded-lg">#{kw}</span>
                 ))}
               </div>
             </motion.div>
@@ -383,7 +377,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.35 }}
-              className="mx-4 mb-4 p-4 bg-white border border-gray-200" style={{ borderRadius: '4px' }}
+              className="mx-4 mb-4 p-4 bg-card border border-gray-100 rounded-xl shadow-card"
             >
               <div className="flex items-center gap-2 mb-3">
                 <Share2 className="w-4 h-4 text-purple-500" />
@@ -404,11 +398,11 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
                     <span>知识图谱更新完成</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <div className="p-3 bg-gray-50 text-center" style={{ borderRadius: '4px' }}>
+                    <div className="p-3 bg-gray-50 text-center rounded-lg">
                       <p className="text-xl font-medium text-gray-900">{graphResult.nodesProcessed}</p>
                       <p className="text-xs text-gray-500">处理节点</p>
                     </div>
-                    <div className="p-3 bg-gray-50 text-center" style={{ borderRadius: '4px' }}>
+                    <div className="p-3 bg-gray-50 text-center rounded-lg">
                       <p className="text-xl font-medium text-gray-900">{graphResult.linksInserted}</p>
                       <p className="text-xs text-gray-500">新增关系</p>
                     </div>
@@ -443,16 +437,14 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
             <div className="flex gap-2">
               <button
                 onClick={() => onNavigate?.('home')}
-                className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors flex items-center justify-center gap-2"
-                style={{ borderRadius: '4px' }}
+                className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors flex items-center justify-center gap-2 rounded-lg"
               >
                 <Home className="w-4 h-4" />
                 返回首页
               </button>
               <button
                 onClick={() => savedItem.id && onNavigate?.('item-detail', savedItem.id)}
-                className="flex-1 px-4 py-2.5 bg-blue-500 text-white text-sm font-medium hover:bg-blue-600 transition-colors flex items-center justify-center gap-2"
-                style={{ borderRadius: '4px' }}
+                className="flex-1 px-4 py-2.5 bg-brand text-white text-sm font-medium hover:bg-brand-strong transition-colors flex items-center justify-center gap-2 rounded-lg shadow-card"
               >
                 <FileText className="w-4 h-4" />
                 查看详情
@@ -460,8 +452,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
             </div>
             <button
               onClick={() => onNavigate?.('knowledge')}
-              className="w-full px-4 py-2.5 bg-purple-50 text-purple-700 text-sm font-medium hover:bg-purple-100 transition-colors flex items-center justify-center gap-2 border border-purple-200"
-              style={{ borderRadius: '4px' }}
+              className="w-full px-4 py-2.5 bg-ai-soft text-ai text-sm font-medium hover:brightness-95 transition-all flex items-center justify-center gap-2 border border-ai/20 rounded-lg"
             >
               <Share2 className="w-4 h-4" />
               查看知识图谱
@@ -479,8 +470,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
                 <button
                   key={option.id}
                   onClick={() => handleCapture(option.id as CaptureMode)}
-                  className={`${option.color} p-8 flex flex-col items-center gap-3 border border-gray-200 transition-colors`}
-                  style={{ borderRadius: '4px' }}
+                  className={`${option.color} p-8 flex flex-col items-center gap-3 border border-gray-100 transition-all hover:-translate-y-0.5 hover:shadow-card rounded-2xl`}
                 >
                   <Icon className="w-8 h-8 text-gray-700" />
                   <span className="text-sm font-medium text-gray-700">{option.label}</span>
@@ -496,8 +486,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
           <div className="flex-none px-4 py-3 border-b border-gray-200 flex items-center justify-between">
             <button
               onClick={handleCancel}
-              className="p-2 hover:bg-gray-100 transition-colors"
-              style={{ borderRadius: '4px' }}
+              className="p-2 hover:bg-gray-100 transition-colors rounded-lg"
             >
               <X className="w-5 h-5 text-gray-600" />
             </button>
@@ -510,8 +499,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
             <button
               onClick={handleSave}
               disabled={isSaving}
-              className="px-4 py-2 bg-blue-500 text-white text-sm hover:bg-blue-600 transition-colors flex items-center gap-2 disabled:bg-blue-300"
-              style={{ borderRadius: '4px' }}
+              className="px-4 py-2 bg-brand text-white text-sm hover:bg-brand-strong transition-colors flex items-center gap-2 disabled:bg-blue-300 rounded-lg"
             >
               {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
               保存
@@ -533,14 +521,12 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
                 placeholder="输入或粘贴文本内容..."
-                className="w-full h-48 p-4 border border-gray-200 text-sm text-gray-900 placeholder:text-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                style={{ borderRadius: '4px' }}
+                className="w-full h-48 p-4 border border-gray-200 text-sm text-gray-900 placeholder:text-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent rounded-xl"
               />
             )}
 
             {mode === 'photo' && (
-              <div className="w-full min-h-64 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-gray-50 overflow-hidden"
-                style={{ borderRadius: '4px' }}
+              <div className="w-full min-h-64 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-gray-50 overflow-hidden rounded-2xl"
                 onClick={() => fileInputRef.current?.click()}
               >
                 {previewUrl ? (
@@ -555,12 +541,11 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
             )}
 
             {mode === 'audio' && (
-              <div className="w-full h-64 border border-gray-200 flex flex-col items-center justify-center bg-gray-50"
-                style={{ borderRadius: '4px' }}
+              <div className="w-full h-64 border border-gray-200 flex flex-col items-center justify-center bg-gray-50 rounded-2xl"
               >
                 {previewUrl ? (
                   <div className="flex flex-col items-center">
-                    <div className="w-16 h-16 bg-blue-500 flex items-center justify-center mb-4 cursor-pointer"
+                    <div className="w-16 h-16 bg-brand flex items-center justify-center mb-4 cursor-pointer"
                       style={{ borderRadius: '50%' }}
                     >
                       <Play className="w-8 h-8 text-white" />
@@ -588,8 +573,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
             )}
 
             {mode === 'import' && (
-              <div className="w-full h-64 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-gray-50 text-gray-400"
-                style={{ borderRadius: '4px' }}
+              <div className="w-full h-64 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-gray-50 text-gray-400 rounded-2xl"
                 onClick={() => fileInputRef.current?.click()}
               >
                 {file ? (
@@ -610,12 +594,11 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
 
             {/* 实时预览提取结果 */}
             {(textInput || file) && (
-              <div className="mt-4 p-4 bg-gray-50 border border-gray-200"
-                style={{ borderRadius: '4px' }}
+              <div className="mt-4 p-4 bg-gray-50 border border-gray-100 rounded-xl"
               >
                 <div className="flex items-center justify-between mb-3">
                   <h4 className="text-sm font-medium text-gray-900">提取结果预览</h4>
-                  <span className="flex items-center gap-1.5 px-3 py-1 bg-purple-50 text-purple-700 text-xs">
+                  <span className="flex items-center gap-1.5 px-3 py-1 bg-ai-soft text-ai text-xs rounded-full">
                     <Sparkles className="w-3 h-3" />
                     保存时自动提取
                   </span>
@@ -627,8 +610,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
                     type="text"
                     value={extractedData.title}
                     onChange={(e) => setExtractedData({...extractedData, title: e.target.value})}
-                    className="w-full px-3 py-2 bg-white border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    style={{ borderRadius: '4px' }}
+                    className="w-full px-3 py-2 bg-white border border-gray-200 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand rounded-lg"
                   />
                 </div>
 
@@ -638,8 +620,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
                     {extractedData.keywords.map((keyword, idx) => (
                       <span
                         key={idx}
-                        className="px-2 py-1 bg-blue-100 text-blue-700 text-xs"
-                        style={{ borderRadius: '4px' }}
+                        className="px-2 py-1 bg-brand-soft text-brand-strong text-xs rounded-lg"
                       >
                         {keyword}
                       </span>

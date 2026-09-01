@@ -17,8 +17,11 @@
  *             "hallucinations": ["…"], "overall": "…", "raw": "…" }
  */
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
+import { resolveRequestScope } from './_lib/requestScope.js';
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
 function safeJsonParse(text: string): unknown {
   try { return JSON.parse(text); } catch { return null; }
@@ -60,6 +63,8 @@ interface JudgeContext {
   stats: unknown;
   trends: unknown;
   themeTrends: unknown;
+  /** P3 每周变化骨架（30d 有值，7d 为 null） */
+  weeklyTimeline: unknown;
 }
 
 function buildJudgePrompt(ctx: JudgeContext): string {
@@ -84,7 +89,7 @@ function buildJudgePrompt(ctx: JudgeContext): string {
       .map((t) => `- ${t.name ?? ''}(${t.direction ?? '?'}, 近窗${t.recent ?? '?'}次/远窗${t.older ?? '?'}次)`)
       .join('\n')
     : '';
-
+  const weeklyText = typeof ctx.weeklyTimeline === 'string' && ctx.weeklyTimeline ? ctx.weeklyTimeline : '';
   return `你是一位严格的总结质量评审员。以下是"用户最近的原始捕获记录"、"系统计算的数据"和"系统生成的总结"，请按评分卡客观打分。
 
 ## 原始捕获记录（事实依据，仅以此为准）
@@ -94,6 +99,8 @@ ${captureText}
 统计数据: ${statsText}
 变化趋势:
 ${trendsText}
+每周变化:
+${weeklyText}
 主题方向:
 ${themeTrendsText}
 
@@ -176,6 +183,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  // 发布门禁 4: 评估端点也消耗 LLM，Demo（body.demo）或真实 Bearer 才允许调用
+  try {
+    await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+  } catch (e: unknown) {
+    res.status(401).json({ error: e instanceof Error ? e.message : 'Authentication required' });
+    return;
+  }
+
   const apiKey = process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
   if (!apiKey) {
     res.status(503).json({ error: 'Judge unavailable: no LLM key' });
@@ -199,6 +214,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       stats: req.body?.stats,
       trends: req.body?.trends,
       themeTrends: req.body?.themeTrends,
+      weeklyTimeline: req.body?.weeklyTimeline,
     });
 
     for (const model of candidates) {

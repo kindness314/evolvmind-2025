@@ -173,9 +173,11 @@ export function isTrivialNodeName(name: string): boolean {
 }
 
 /**
- * 判断一条捕获记录是否为噪声（标题或内容无信息量）
+ * 判断一条捕获记录是否为噪声（标题或内容无信息量）。
+ * tags 可选：无标签且正文极短（剥标点后 ≤10 字）的琐碎记录也判噪声，
+ * 覆盖"窗外有只橘猫在晒太阳/今天天气不错"这类无意义白描。
  */
-export function isNoiseCapture(title: string, summary?: string, content?: string): boolean {
+export function isNoiseCapture(title: string, summary?: string, content?: string, tags?: string[]): boolean {
   const combined = `${title || ''} ${summary || ''} ${content || ''}`.toLowerCase().trim();
   if (!combined) return true;
 
@@ -186,6 +188,11 @@ export function isNoiseCapture(title: string, summary?: string, content?: string
   for (const re of NOISE_CAPTURE_TITLE_PATTERNS) {
     if (re.test(title)) return true;
   }
+
+  // 无标签 + 正文剥标点/空白后 ≤10 字 → 琐碎白描，不是有效观察
+  const body = `${summary || ''} ${content || ''}`.replace(/[\s，。、！？；：,.!?;:""''（）()\-—…\dA-Za-z]/g, '');
+  const hasTags = Array.isArray(tags) && tags.length > 0;
+  if (!hasTags && body.length > 0 && body.length <= 10) return true;
 
   return false;
 }

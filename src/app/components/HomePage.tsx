@@ -23,6 +23,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [recsLoading, setRecsLoading] = useState(false);
   const [dismissedRecIds, setDismissedRecIds] = useState<Set<string>>(new Set());
+  const [clickedRecIds, setClickedRecIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -39,7 +40,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
     let cancelled = false;
     const load = async () => {
       setRecsLoading(true);
-      const result = await fetchRecommendations({ dismissedIds: [...dismissedRecIds] });
+      const result = await fetchRecommendations({ dismissedIds: [...dismissedRecIds], clickedIds: [...clickedRecIds] });
       if (!cancelled) { setRecommendations(result.recommendations); setRecsLoading(false); }
     };
     load();
@@ -51,13 +52,12 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
   useEffect(() => {
     if (prevActiveRef.current === false && active === true) {
       fetchSummary({ period: summaryPeriod }).then(setSummary);
-      fetchRecommendations({ dismissedIds: [...dismissedRecIds] }).then((r) => setRecommendations(r.recommendations));
+      fetchRecommendations({ dismissedIds: [...dismissedRecIds], clickedIds: [...clickedRecIds] }).then((r) => setRecommendations(r.recommendations));
     }
-    prevActiveRef.current = active;
-  }, [active, summaryPeriod, dismissedRecIds]);
+  }, [active, summaryPeriod, dismissedRecIds, clickedRecIds]);
 
-  const tabBase = 'flex-1 flex items-center justify-center gap-1.5 py-2 text-sm font-medium transition-colors';
-  const tabActive = 'bg-white text-blue-600 shadow-sm';
+  const tabBase = 'flex-1 flex items-center justify-center gap-1.5 py-2 text-sm font-medium transition-all';
+  const tabActive = 'bg-white text-brand shadow-card';
   const tabIdle = 'text-gray-500 hover:text-gray-700';
 
   // 推荐类型配置
@@ -81,11 +81,11 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
     <div className="h-full flex flex-col bg-white relative">
       {/* 顶部模块切换 */}
       <div className="flex-none px-4 pt-4 pb-3">
-        <div className="flex items-center gap-1 bg-gray-100 p-1" style={{ borderRadius: '4px' }}>
+        <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl">
           <button
             onClick={() => setHomeTab('recs')}
             className={`${tabBase} ${homeTab === 'recs' ? tabActive : tabIdle}`}
-            style={{ borderRadius: '3px' }}
+            style={{ borderRadius: 8 }}
           >
             <Sparkles className="w-4 h-4" />
             为你推荐
@@ -93,7 +93,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
           <button
             onClick={() => setHomeTab('summary')}
             className={`${tabBase} ${homeTab === 'summary' ? tabActive : tabIdle}`}
-            style={{ borderRadius: '3px' }}
+            style={{ borderRadius: 8 }}
           >
             <CalendarRange className="w-4 h-4" />
             近期总结
@@ -106,7 +106,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
           /* ===== 推荐卡片 ===== */
           recsLoading ? (
             <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-2" />
+              <Loader2 className="w-8 h-8 text-brand animate-spin mb-2" />
               <p className="text-base text-gray-400">正在生成推荐...</p>
             </div>
           ) : recommendations.length > 0 ? (
@@ -125,9 +125,9 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                   {sortedGroups.map((group) => {
                     const meta = recTypeMeta[group.type] || recTypeMeta.related;
                     return (
-                      <div key={group.type} className="bg-white border border-gray-200 overflow-hidden" style={{ borderRadius: '4px' }}>
-                        <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border-b border-gray-100">
-                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium ${meta.color}`} style={{ borderRadius: '3px' }}>
+                      <div key={group.type} className="bg-card border border-gray-100 overflow-hidden rounded-xl shadow-card">
+                        <div className="flex items-center gap-2 px-3 py-2 bg-gray-50/70 border-b border-gray-100">
+                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium ${meta.color}`} style={{ borderRadius: 6 }}>
                             {meta.icon} {meta.label}
                           </span>
                           <span className="text-xs text-gray-400">{group.items.length} 项</span>
@@ -139,13 +139,15 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                               initial={{ opacity: 0 }}
                               animate={{ opacity: 1 }}
                               onClick={() => {
+                                // P5 点击正反馈：记录点击的推荐，下次请求上报（服务端 +0.5）
+                                setClickedRecIds((prev) => (prev.has(rec.id) ? prev : new Set([...prev, rec.id])));
                                 if (rec.targetType === 'node' && rec.nodeId) {
                                   onNavigate?.('knowledge', rec.nodeId);
                                 } else if (rec.targetType === 'captured') {
                                   onNavigate?.('item-detail', rec.targetId);
                                 }
                               }}
-                              className="w-full text-left px-3 py-2 hover:bg-blue-50/30 transition-colors group"
+                              className="w-full text-left px-3 py-2 hover:bg-brand-soft/50 transition-colors group"
                             >
                               <div className="flex items-start justify-between gap-2">
                                 <div className="min-w-0 flex-1">
@@ -153,8 +155,8 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                                   <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{rec.reason}</p>
                                   {rec.action && (
                                     <div className="flex items-start gap-1 mt-1">
-                                      <Lightbulb className="w-3 h-3 text-blue-400 mt-0.5 flex-none" />
-                                      <p className="text-xs text-blue-600 leading-relaxed">{rec.action}</p>
+                                      <Lightbulb className="w-3 h-3 text-brand mt-0.5 flex-none" />
+                                      <p className="text-xs text-brand-strong leading-relaxed">{rec.action}</p>
                                     </div>
                                   )}
                                   {rec.evidence && rec.evidence.length > 0 && (
@@ -163,7 +165,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                                         <span
                                           key={`${ev.type}-${ev.id}`}
                                           className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-50 border border-gray-100 text-[11px] text-gray-500 max-w-full"
-                                          style={{ borderRadius: '3px' }}
+                                          style={{ borderRadius: 6 }}
                                         >
                                           {ev.type === 'node'
                                             ? <Tag className="w-2.5 h-2.5 flex-none" />
@@ -203,7 +205,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
           /* ===== 总结卡片 ===== */
           summaryLoading ? (
             <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-2" />
+              <Loader2 className="w-8 h-8 text-brand animate-spin mb-2" />
               <p className="text-base text-gray-400">正在生成总结...</p>
             </div>
           ) : summary && summary.ok && (summary.stats.capturedCount > 0 || summary.stats.newNodeCount > 0) ? (
@@ -211,18 +213,16 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
               {/* 周期切换 */}
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-gray-700">近期总结</span>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 bg-gray-100 p-0.5 rounded-lg">
                   <button
                     onClick={() => setSummaryPeriod('7d')}
-                    className={`px-2.5 py-0.5 text-xs transition-colors ${summaryPeriod === '7d' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
-                    style={{ borderRadius: '4px' }}
+                    className={`px-2.5 py-0.5 text-xs transition-all ${summaryPeriod === '7d' ? 'bg-white text-brand font-medium shadow-sm rounded-md' : 'text-gray-500 hover:text-gray-700'}`}
                   >
                     7 天
                   </button>
                   <button
                     onClick={() => setSummaryPeriod('30d')}
-                    className={`px-2.5 py-0.5 text-xs transition-colors ${summaryPeriod === '30d' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
-                    style={{ borderRadius: '4px' }}
+                    className={`px-2.5 py-0.5 text-xs transition-all ${summaryPeriod === '30d' ? 'bg-white text-brand font-medium shadow-sm rounded-md' : 'text-gray-500 hover:text-gray-700'}`}
                   >
                     30 天
                   </button>
@@ -230,7 +230,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
               </div>
 
               {/* Stats bar */}
-              <div className="flex items-center gap-3 px-3 py-2 bg-gray-50 text-xs text-gray-500" style={{ borderRadius: '4px' }}>
+              <div className="flex items-center gap-3 px-3 py-2 bg-gray-50 text-xs text-gray-500 rounded-lg">
                 <span><span className="font-medium text-gray-700">{summary.stats.capturedCount}</span> 条捕获</span>
                 <span className="text-gray-300">|</span>
                 <span><span className="font-medium text-gray-700">{summary.stats.newNodeCount}</span> 个节点</span>
@@ -243,10 +243,10 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  className="border border-blue-100 overflow-hidden"
-                  style={{ borderRadius: '4px', background: 'linear-gradient(135deg, #eff6ff 0%, #ffffff 55%)' }}
+                  className="border border-brand-100 overflow-hidden rounded-xl shadow-card"
+                  style={{ background: 'linear-gradient(135deg, var(--brand-soft) 0%, #ffffff 55%)' }}
                 >
-                  <h4 className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50/60 border-b border-blue-100 flex items-center gap-1.5">
+                  <h4 className="px-3 py-1.5 text-xs font-medium text-brand bg-brand-soft/60 border-b border-brand-100 flex items-center gap-1.5">
                     <CalendarRange className="w-3 h-3" />
                     这段时间你在忙什么
                   </h4>
@@ -256,7 +256,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
 
               {/* Trends（变化趋势） */}
               {summary.trends.length > 0 && (
-                <div className="bg-white border border-gray-200 overflow-hidden" style={{ borderRadius: '4px' }}>
+                <div className="bg-card border border-gray-100 overflow-hidden rounded-xl shadow-card">
                   <h4 className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b border-gray-100">
                     变化趋势
                   </h4>
@@ -276,7 +276,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
 
               {/* 主题动态（确定性方向信号） */}
               {summary.themeTrends && summary.themeTrends.length > 0 && (
-                <div className="bg-white border border-gray-200 overflow-hidden" style={{ borderRadius: '4px' }}>
+                <div className="bg-card border border-gray-100 overflow-hidden rounded-xl shadow-card">
                   <h4 className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b border-gray-100">
                     主题动态
                   </h4>
@@ -294,7 +294,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                           key={i}
                           title={t.detail}
                           className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] border ${chipCls}`}
-                          style={{ borderRadius: '3px' }}
+                          style={{ borderRadius: 6 }}
                         >
                           <span className={m.color}>{m.icon}</span>
                           {t.name}
@@ -308,7 +308,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
 
               {/* Themes（卡片式） */}
               {summary.themes.length > 0 && (
-                <div className="bg-white border border-gray-200 overflow-hidden" style={{ borderRadius: '4px' }}>
+                <div className="bg-card border border-gray-100 overflow-hidden rounded-xl shadow-card">
                   <h4 className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b border-gray-100">
                     关注主题
                   </h4>
@@ -323,7 +323,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                             <span className="text-sm text-gray-700 w-20 truncate flex-none">{t.name}</span>
                             <div className="flex-1 h-2 bg-gray-100 overflow-hidden" style={{ borderRadius: '2px' }}>
                               <div
-                                className="h-full bg-blue-400 transition-all"
+                                className="h-full bg-brand transition-all"
                                 style={{ width: `${barWidth}%`, borderRadius: '2px' }}
                               />
                             </div>
@@ -344,7 +344,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
 
               {/* Important nodes */}
               {summary.importantNodes.length > 0 && (
-                <div className="bg-white border border-gray-200 overflow-hidden" style={{ borderRadius: '4px' }}>
+                <div className="bg-card border border-gray-100 overflow-hidden rounded-xl shadow-card">
                   <h4 className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b border-gray-100">
                     重要节点
                   </h4>
@@ -352,7 +352,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                     {summary.importantNodes.map((n, i) => (
                       <div key={i} className="flex items-start gap-2">
                         <div
-                          className="w-1.5 h-1.5 mt-1.5 rounded-full bg-blue-400 flex-none"
+                          className="w-1.5 h-1.5 mt-1.5 rounded-full bg-brand flex-none"
                         />
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
@@ -369,7 +369,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
 
               {/* Highlights（原文摘录） */}
               {summary.highlights.length > 0 && (
-                <div className="bg-white border border-gray-200 overflow-hidden" style={{ borderRadius: '4px' }}>
+                <div className="bg-card border border-gray-100 overflow-hidden rounded-xl shadow-card">
                   <h4 className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b border-gray-100">
                     代表性摘录
                   </h4>
@@ -385,7 +385,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
 
               {/* New connections（折叠式） */}
               {summary.newConnections.length > 0 && (
-                <div className="bg-white border border-gray-200 overflow-hidden" style={{ borderRadius: '4px' }}>
+                <div className="bg-card border border-gray-100 overflow-hidden rounded-xl shadow-card">
                   <h4 className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b border-gray-100">
                     新发现的关联
                   </h4>
@@ -413,20 +413,20 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
               {/* Next actions（高亮卡） */}
               {summary.nextActions.length > 0 && (
                 <div
-                  className="border border-blue-200 overflow-hidden"
-                  style={{ borderRadius: '4px', background: 'linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%)' }}
+                  className="border border-brand-200 overflow-hidden rounded-xl shadow-card"
+                  style={{ background: 'linear-gradient(135deg, var(--brand-soft) 0%, #f0f9ff 100%)' }}
                 >
-                  <h4 className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-100/50 border-b border-blue-200 flex items-center gap-1.5">
+                  <h4 className="px-3 py-1.5 text-xs font-medium text-brand bg-brand-soft/80 border-b border-brand-200 flex items-center gap-1.5">
                     <Lightbulb className="w-3 h-3" />
                     建议行动
                   </h4>
                   <div className="px-3 py-2 space-y-1.5">
                     {summary.nextActions.map((a, i) => (
                       <div key={i} className="flex items-start gap-2">
-                        <span className="flex-none w-4 h-4 rounded-full bg-blue-500 text-white text-[11px] flex items-center justify-center mt-0.5">
+                        <span className="flex-none w-4 h-4 rounded-full bg-brand text-white text-[11px] flex items-center justify-center mt-0.5">
                           {i + 1}
                         </span>
-                        <span className="text-sm text-blue-800 leading-relaxed">{a}</span>
+                        <span className="text-sm text-brand-strong leading-relaxed">{a}</span>
                       </div>
                     ))}
                   </div>
@@ -434,12 +434,12 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
               )}
             </div>
           ) : summary && !summary.ok ? (
-            <div className="bg-white border border-gray-200 p-3" style={{ borderRadius: '4px' }}>
+            <div className="bg-card border border-gray-100 p-3 rounded-xl shadow-card">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-400">总结暂不可用</span>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setSummaryPeriod('7d')} className={`px-2 py-0.5 text-xs ${summaryPeriod === '7d' ? 'bg-blue-100 text-blue-700' : 'text-gray-500'}`} style={{ borderRadius: '4px' }}>7 天</button>
-                  <button onClick={() => setSummaryPeriod('30d')} className={`px-2 py-0.5 text-xs ${summaryPeriod === '30d' ? 'bg-blue-100 text-blue-700' : 'text-gray-500'}`} style={{ borderRadius: '4px' }}>30 天</button>
+                <div className="flex items-center gap-1 bg-gray-100 p-0.5 rounded-lg">
+                  <button onClick={() => setSummaryPeriod('7d')} className={`px-2 py-0.5 text-xs ${summaryPeriod === '7d' ? 'bg-white text-brand font-medium rounded-md shadow-sm' : 'text-gray-500'}`}>7 天</button>
+                  <button onClick={() => setSummaryPeriod('30d')} className={`px-2 py-0.5 text-xs ${summaryPeriod === '30d' ? 'bg-white text-brand font-medium rounded-md shadow-sm' : 'text-gray-500'}`}>30 天</button>
                 </div>
               </div>
             </div>
@@ -453,13 +453,12 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
 
       {/* 浮动捕获按钮 */}
       <motion.button
-        whileTap={{ scale: 0.95 }}
+        whileTap={{ scale: 0.92 }}
         onClick={() => onNavigate?.('capture')}
-        className="absolute right-4 bottom-36 w-14 h-14 bg-blue-500 text-white shadow-lg hover:bg-blue-600 transition-colors flex items-center justify-center z-10"
-        style={{ borderRadius: '4px' }}
+        className="absolute right-4 bottom-36 w-14 h-14 bg-brand text-white shadow-float hover:brightness-110 transition-all flex items-center justify-center z-10 rounded-full"
         aria-label="捕获信息"
       >
-        <Plus className="w-6 h-6" />
+        <Plus className="w-6 h-6" strokeWidth={2.4} />
       </motion.button>
     </div>
   );

@@ -1,3 +1,5 @@
+import { getApiAuthHeaders } from './apiAuth';
+
 export interface ExtractedInfo {
   title: string;
   keywords: string[];
@@ -147,9 +149,7 @@ export async function extractInformation(content: string): Promise<ExtractedInfo
   try {
     const resp = await fetch('/api/extract', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: await getApiAuthHeaders(),
       body: JSON.stringify({ content })
     });
 
