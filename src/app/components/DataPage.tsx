@@ -3,7 +3,8 @@ import { Search, Plus, Loader2, FileText, Image as ImageIcon, Mic, File, Pin, Ch
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { toast } from 'sonner';
 import { supabase } from '../../lib/supabase';
-import { semanticSearch, type SearchResult } from '../../lib/search';
+import { semanticSearch, generateEmbeddingForRow, type SearchResult } from '../../lib/search';
+import { requestKnowledgeNodeBackfill } from '../../lib/graphSearch';
 import { retryCapturedItem } from '../../lib/process';
 
 interface InfoCard {
@@ -167,7 +168,7 @@ const formatInfoRow = (item: InfoRow, reconciled: { completed: Set<string>; fail
   id: item.id,
   type: item.type as InfoCard['type'],
   title: item.title,
-  content: item.content || item.summary || '',
+  content: item.summary || item.content || '',
   timestamp: new Date(item.created_at).toLocaleString(),
   created_at_raw: item.created_at || undefined,
   tags: item.tags || [],
@@ -233,12 +234,45 @@ export function DataPage({ onNavigate }: DataPageProps) {
   // 观察集: 已知非 completed 的 id; 行状态完成后会退出 neq 查询, 若不观察, UI 停留在旧"处理中"快照
   const watchRef = useRef<Set<string>>(new Set());
 
+  // 后台补语义向量（2026-09 后台化）：向量生成不再由保存流程触发，
+  // 改由数据页后台轮询时对"缺失/失败"向量的行串行补算（限速 limit 2，避免 QPM）。RLS 自动限定本 scope。
+  const backfillBusyRef = useRef(false);
+  const backfillEmbeddings = useCallback(async () => {
+    if (backfillBusyRef.current) return;
+    backfillBusyRef.current = true;
+    try {
+      // 内容语义向量（缺失/失败的 captured 行，限速 2 条）
+      const { data, error } = await supabase
+        .from('captured_info')
+        .select('id')
+        .or('embedding_status.is.null,embedding_status.eq.pending,embedding_status.eq.failed')
+        .limit(2);
+      if (!error && data && data.length > 0) {
+        for (const row of data) {
+          await generateEmbeddingForRow(row.id);
+        }
+        window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
+      }
+      // 知识节点向量（后端 /api/graph/backfill 自己找缺失的，小批次限速防 QPM）
+      try {
+        await requestKnowledgeNodeBackfill(2);
+      } catch {
+        // 知识节点回填失败静默，下轮重试
+      }
+    } catch {
+      // 静默失败: 下轮轮询重试, 不打断页面
+    } finally {
+      backfillBusyRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     fetchData();
     // 30s 静默轮询: 多数轮次只做增量(新增行 + 状态未完成行), 每 6 次(~3min)全量对账一次,
-    // 兜底捕获删除/置顶等增量查询感知不到的变化
+    // 兜底捕获删除/置顶等增量查询感知不到的变化。每轮顺手后台补缺失向量。
     const timer = setInterval(() => {
       pollCountRef.current += 1;
+      void backfillEmbeddings();
       if (pollCountRef.current % 6 === 0) {
         void fetchData(false);
       } else {
@@ -510,7 +544,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
         id: r.id,
         type: r.type as InfoCard['type'],
         title: r.title,
-        content: r.content || r.summary || '',
+        content: r.summary || r.content || '',
         timestamp: new Date(r.created_at).toLocaleString(),
         tags: r.tags || [],
         is_pinned: r.is_pinned || false,

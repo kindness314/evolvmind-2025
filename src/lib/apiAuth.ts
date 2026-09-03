@@ -1,7 +1,12 @@
 import { supabase } from './supabase';
+import { getCustomApiKey } from './apiKey';
 
 export async function getApiAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  // 用户自定义 Key（个人中心配置）：带 X-Api-Key 头，后端 resolveApiKey 优先使用
+  const customKey = getCustomApiKey();
+  if (customKey) headers['X-Api-Key'] = customKey;
+
   if (localStorage.getItem('demo_auth') === 'true') {
     headers['X-EvolvMind-Demo'] = 'true';
     return headers;

@@ -1,4 +1,5 @@
 import { resolveRequestScope } from './_lib/requestScope.js';
+import { resolveApiKey } from './_lib/apiKey.js';
 // 手动声明 Vercel 平台提供的请求与响应类型，避免依赖 @vercel/node
 type VercelRequest = {
   method?: string;
@@ -288,7 +289,7 @@ function isNonChatModel(model: string) {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const apiKey = process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
+  const apiKey = resolveApiKey(req);
   const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
 
   const preferredModel = process.env.MINIMAX_MODEL || '';

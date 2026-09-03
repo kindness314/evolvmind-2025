@@ -20,6 +20,7 @@
  */
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope } from './_lib/requestScope.js';
+import { resolveApiKey } from './_lib/apiKey.js';
 import { batchEmbedCaptures, findSimilarPairs, type CapturedForEmbedding, type CapturedWithEmbedding } from './_lib/similarity.js';
 import {
   buildGraphIndex,
@@ -38,7 +39,6 @@ import { isNoiseCapture, isTrivialNodeName } from './_lib/noise.js';
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || process.env.MINIMAX_CHAT_API_KEY || '';
 const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL || 'https://api.edgefn.net/v1';
 const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-M2.5';
 const MAX_RECOMMENDATIONS = 6;
@@ -89,8 +89,8 @@ function extractJsonArray(text: string): unknown[] | null {
  * 用 LLM 为每条推荐生成更自然的理由（针对该条的具体内容）。
  * 短超时（5s）+ 失败/数量不匹配时保留确定性 reason，避免推荐因 LLM 失败而空白或卡太久。
  */
-async function enrichRecommendationReasons(recommendations: RecommendationItem[]): Promise<RecommendationItem[]> {
-  if (!MINIMAX_API_KEY || recommendations.length === 0) return recommendations;
+async function enrichRecommendationReasons(recommendations: RecommendationItem[], apiKey: string): Promise<RecommendationItem[]> {
+  if (!apiKey || recommendations.length === 0) return recommendations;
   const prompt = [
     `你是知识助手，理解用户记录意图。下面有 ${recommendations.length} 条知识推荐，请为每条生成一句自然、贴切、有洞察的中文推荐理由（≤40字，第二人称"你"，不要模板套话，不同条理由句式尽量不同，像真人读懂用户的推荐语）。`,
     `只输出 JSON 数组，如 ["理由1","理由2",...]，与输入顺序一一对应。`,
@@ -102,7 +102,7 @@ async function enrichRecommendationReasons(recommendations: RecommendationItem[]
     const timer = setTimeout(() => controller.abort(), 5000);
     const resp = await fetch(`${MINIMAX_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MINIMAX_API_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: prompt }], temperature: 0.7 }),
       signal: controller.signal,
     });
@@ -221,6 +221,7 @@ function nodeEvidence(n: NodeRow): RecommendationEvidence {
 // ---------------------------------------------------------------------------
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const apiKey = resolveApiKey(req);
   if (req.method === 'GET') {
     res.status(200).json({ ok: true, route: '/api/recommend' });
     return;
@@ -298,7 +299,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // --- Step 1: 尝试 embedding（语义分析）---
     let embeddedCaptures: CapturedWithEmbedding[] = [];
-    if (MINIMAX_API_KEY) {
+    if (apiKey) {
       const forEmbedding: CapturedForEmbedding[] = signalCaptured.slice(0, 20).map((c) => ({
         id: c.id,
         title: c.title,
@@ -307,7 +308,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         tags: c.tags,
         created_at: c.created_at,
       }));
-      embeddedCaptures = await batchEmbedCaptures(forEmbedding, MINIMAX_API_KEY);
+      embeddedCaptures = await batchEmbedCaptures(forEmbedding, apiKey);
     }
 
     // P6 BM25 语料：全部信号捕获的标题+内容，作为关键词信号的参照集
@@ -601,7 +602,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const pickedRecommendations = picked.slice(0, MAX_RECOMMENDATIONS).map((s) => s.item);
 
     // 用 LLM 针对性生成更自然的推荐理由（短超时 + 失败保留确定性 reason）
-    const recommendations = await enrichRecommendationReasons(pickedRecommendations);
+    const recommendations = await enrichRecommendationReasons(pickedRecommendations, apiKey);
 
     res.status(200).json({
       ok: true,

@@ -10,6 +10,7 @@
  */
 import { generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
 import { resolveRequestScope } from '../_lib/requestScope.js';
+import { resolveApiKey } from '../_lib/apiKey.js';
 import { cosineSimilarity } from '../_lib/similarity.js';
 
 export const maxDuration = 60;
@@ -17,7 +18,6 @@ export const maxDuration = 60;
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || process.env.MINIMAX_CHAT_API_KEY || '';
 
 /** 消歧相似度阈值：>0.85 且同 kind 才合并（避免误并） */
 const MERGE_SIMILARITY = 0.85;
@@ -36,6 +36,7 @@ interface ExistingNode {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const apiKey = resolveApiKey(req);
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method Not Allowed' });
     return;
@@ -113,7 +114,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const c = candidates[idx];
         try {
           const text = `${c.name} ${c.kind}`.trim();
-          const { embedding } = await generateEmbedding({ text, apiKey: MINIMAX_API_KEY });
+          const { embedding } = await generateEmbedding({ text, apiKey });
           if (!embedding || embedding.length === 0) continue;
           let bestSim = 0;
           let bestNode: ExistingNode | null = null;

@@ -18,6 +18,7 @@
  */
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope } from './_lib/requestScope.js';
+import { resolveApiKey } from './_lib/apiKey.js';
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
@@ -191,7 +192,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const apiKey = process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
+  const apiKey = resolveApiKey(req);
   if (!apiKey) {
     res.status(503).json({ error: 'Judge unavailable: no LLM key' });
     return;

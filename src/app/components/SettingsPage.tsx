@@ -1,49 +1,16 @@
-import { Lock, Cpu, Database, LogOut, Sparkles, Loader2, ShieldCheck, XCircle } from 'lucide-react';
+import { Lock, Cpu, LogOut, Loader2, ShieldCheck, RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
 import { createClient } from '@supabase/supabase-js';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import { useRef, useState, useEffect } from 'react';
-import { requestKnowledgeNodeBackfill } from '../../lib/graphSearch';
-import { requestBackfill } from '../../lib/search';
+import { getCustomApiKey, setCustomApiKey, clearCustomApiKey, isCustomKeyEnabled } from '../../lib/apiKey';
 
 interface SettingsPageProps {
   onLogout?: () => void;
 }
 
-const BACKFILL_BATCH_SIZE = 5;
-const BACKFILL_WAIT_SECONDS = 70;
-const BACKFILL_RATE_LIMIT_WAIT_SECONDS = 90;
-
-function wait(seconds: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, seconds * 1000));
-}
-
-function isRateLimitError(error?: string) {
-  return Boolean(error && (error.includes('RateLimitExceeded') || error.includes('qpm limit exceeded') || error.includes('429')));
-}
-
-function formatBackfillError(error?: string) {
-  if (!error) return '';
-  if (isRateLimitError(error)) return '模型服务限流，稍后会自动重试';
-  if (error.includes('EmbeddingModelNotAllowed') || error.includes('ModelNotAllowed')) {
-    return '当前服务端 Key 没有 embedding 模型权限，请配置可用的 1024 维 embedding 模型/Key 后重试';
-  }
-  if (error.includes('EmbeddingDimensionMismatch')) {
-    return 'embedding 维度不匹配：当前数据库需要 1024 维向量，请使用兼容模型';
-  }
-  return error.length > 180 ? `${error.slice(0, 180)}...` : error;
-}
-
 export function SettingsPage({ onLogout }: SettingsPageProps) {
   const [loggingOut, setLoggingOut] = useState(false);
-  const [backfilling, setBackfilling] = useState(false);
-  const [backfillResult, setBackfillResult] = useState<string | null>(null);
-  const [autoBackfilling, setAutoBackfilling] = useState(false);
-  const [nodeBackfilling, setNodeBackfilling] = useState(false);
-  const [nodeBackfillResult, setNodeBackfillResult] = useState<string | null>(null);
-  const [autoNodeBackfilling, setAutoNodeBackfilling] = useState(false);
-  const stopBackfillRef = useRef(false);
-  const stopNodeBackfillRef = useRef(false);
   const supabase = createClient(
     `https://${projectId}.supabase.co`,
     publicAnonKey
@@ -53,9 +20,6 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
   const [isDemo] = useState(() => localStorage.getItem('demo_auth') === 'true');
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userName, setUserName] = useState<string | null>(null);
-  // 服务端真实模型（O4：删除 GPT/Claude/Whisper 假下拉后，能力区展示真实模型）
-  const [models, setModels] = useState<{ baseUrl: string; ids: string[] } | null>(null);
-  const [modelsError, setModelsError] = useState<string | null>(null);
   // 数据统计：真实计数（此前为硬编码 342/28/156 假数据）
   useEffect(() => {
     let cancelled = false;
@@ -104,35 +68,78 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
     };
   }, [isDemo, supabase]);
 
-  // 服务端真实模型列表（O4：设置页展示实际能力，不伪装）
-  useEffect(() => {
-    let cancelled = false;
-    const loadModels = async () => {
-      try {
-        const resp = await fetch('/api/models');
-        const json = (await resp.json()) as { ok?: boolean; baseUrl?: string; models?: string[] };
-        if (!cancelled) {
-          if (json.ok && Array.isArray(json.models)) {
-            setModels({ baseUrl: json.baseUrl ?? '', ids: json.models });
-            setModelsError(null);
-          } else {
-            setModels(null);
-            setModelsError('无法获取服务端模型列表');
-          }
-        }
-      } catch {
-        if (!cancelled) {
-          setModels(null);
-          setModelsError('模型服务不可达');
-        }
-      }
-    };
-    void loadModels();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
+  // 自定义 API Key（2026-09：真正生效，本地混淆存储，请求带 X-Api-Key 头）
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [customEnabled, setCustomEnabled] = useState(() => isCustomKeyEnabled());
+  const [keySaved, setKeySaved] = useState(false);
+  const saveCustomKey = () => {
+    if (apiKeyInput.trim()) setCustomApiKey(apiKeyInput);
+    else clearCustomApiKey();
+    setCustomEnabled(isCustomKeyEnabled());
+    setKeySaved(true);
+    setTimeout(() => setKeySaved(false), 2000);
+  };
+
+  // 服务状态检测（2026-09：已知服务逐项，已实现才显示；进入页面自动检测一次）
+  interface ServiceStatus { name: string; state: 'ok' | 'warn' | 'error' | 'pending'; detail: string; }
+  const [services, setServices] = useState<ServiceStatus[]>(() => ([
+    { name: '文本 AI（摘要/图谱/推荐）', state: 'pending', detail: '检测中…' },
+    { name: '语义向量（embedding）', state: 'pending', detail: '检测中…' },
+    { name: 'Supabase 数据库', state: 'pending', detail: '检测中…' },
+    { name: '图片 OCR（浏览器本地）', state: 'pending', detail: '检测中…' },
+    { name: '语音识别（录音转写）', state: 'pending', detail: '检测中…' },
+    { name: '文档解析（pdf/docx）', state: 'pending', detail: '检测中…' },
+  ]));
+  const [checking, setChecking] = useState(false);
+  const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null);
+  const runServiceChecks = async () => {
+    setChecking(true);
+    const results: ServiceStatus[] = [];
+    try {
+      try {
+        const r = await fetch('/api/extract');
+        const j = await r.json().catch(() => null);
+        const hasKey = j?.hasKey === true;
+        results.push({ name: '文本 AI（摘要/图谱/推荐）', state: r.ok ? (hasKey ? 'ok' : 'warn') : 'error', detail: hasKey ? (j?.model ? `可用 · ${j.model}` : '可用') : '服务端未配置 Key（可用系统或自定义 Key）' });
+      } catch {
+        results.push({ name: '文本 AI（摘要/图谱/推荐）', state: 'error', detail: '端点不可达' });
+      }
+      try {
+        const r = await fetch('/api/embed', { method: 'GET' });
+        const j = await r.json().catch(() => null);
+        const hasKey = j?.hasKey === true;
+        results.push({ name: '语义向量（embedding）', state: hasKey ? 'ok' : 'warn', detail: hasKey ? 'Key 可用（BAAI/bge-m3 1024 维）' : '未配置 Key' });
+      } catch {
+        results.push({ name: '语义向量（embedding）', state: 'error', detail: '端点不可达' });
+      }
+      try {
+        const { count } = await supabase.from('captured_info').select('id', { count: 'exact', head: true });
+        results.push({ name: 'Supabase 数据库', state: 'ok', detail: `可访问（${count ?? 0} 条内容）` });
+      } catch {
+        results.push({ name: 'Supabase 数据库', state: 'error', detail: '连接失败' });
+      }
+      results.push({ name: '图片 OCR', state: 'warn', detail: '浏览器本地 tesseract（中文；清晰文字图识别，内容图需手动描述）' });
+      const sr = typeof window !== 'undefined' && Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+      results.push({ name: '语音识别（录音转写）', state: sr ? 'ok' : 'warn', detail: sr ? '支持（浏览器原生）' : '当前浏览器不支持' });
+      try {
+        const r = await fetch('/api/documents/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ storage_path: '', demo: true }) });
+        results.push({ name: '文档解析（pdf/docx）', state: r.status === 400 ? 'ok' : 'warn', detail: r.status === 400 ? '后端可用（不含云 vision/ASR）' : `状态 ${r.status}` });
+      } catch {
+        results.push({ name: '文档解析（pdf/docx）', state: 'error', detail: '端点不可达' });
+      }
+    } finally {
+      setServices(results);
+      setLastCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
+      setChecking(false);
+    }
+  };
+
+  // 进入页面自动检测一次（不要求手动点按钮）
+  useEffect(() => {
+    void runServiceChecks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleLogout = async () => {
     if (loggingOut) return;
@@ -150,110 +157,6 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
     } finally {
       setLoggingOut(false);
     }
-  };
-
-  const handleBackfill = async () => {
-    if (backfilling) return;
-    setBackfilling(true);
-    setBackfillResult(null);
-    try {
-      const result = await requestBackfill(BACKFILL_BATCH_SIZE);
-      const firstError = result.errors?.[0]?.error;
-      setBackfillResult(`成功回填 ${result.processed}/${result.total} 条${result.errors?.length ? `，${result.errors.length} 条失败：${formatBackfillError(firstError)}` : ''}`);
-    } catch (e: any) {
-      setBackfillResult(`回填失败: ${e.message}`);
-    } finally {
-      setBackfilling(false);
-    }
-  };
-
-  const handleAutoBackfill = async () => {
-    if (autoBackfilling || backfilling) return;
-    stopBackfillRef.current = false;
-    setAutoBackfilling(true);
-    setBackfillResult('自动回填已开始，每批 5 条。');
-
-    let rounds = 0;
-    let processedTotal = 0;
-
-    try {
-      while (!stopBackfillRef.current) {
-        rounds++;
-        const result = await requestBackfill(BACKFILL_BATCH_SIZE);
-        const firstError = result.errors?.[0]?.error;
-        processedTotal += result.processed;
-
-        if (result.processed === 0 && !result.errors?.length) {
-          setBackfillResult(`自动回填完成：共处理 ${processedTotal} 条。`);
-          break;
-        }
-
-        const waitSeconds = isRateLimitError(firstError) ? BACKFILL_RATE_LIMIT_WAIT_SECONDS : BACKFILL_WAIT_SECONDS;
-        setBackfillResult(`自动回填第 ${rounds} 轮：成功 ${result.processed}/${result.total} 条，累计 ${processedTotal} 条${result.errors?.length ? `，${result.errors.length} 条失败：${formatBackfillError(firstError)}` : ''}。${waitSeconds} 秒后继续。`);
-        await wait(waitSeconds);
-      }
-    } catch (e: any) {
-      setBackfillResult(`自动回填失败: ${e.message}`);
-    } finally {
-      setAutoBackfilling(false);
-    }
-  };
-
-  const handleNodeBackfill = async () => {
-    if (nodeBackfilling) return;
-    setNodeBackfilling(true);
-    setNodeBackfillResult(null);
-    try {
-      const result = await requestKnowledgeNodeBackfill(BACKFILL_BATCH_SIZE);
-      const firstError = result.errors?.[0]?.error;
-      setNodeBackfillResult(`成功回填 ${result.processed}/${result.total} 个知识节点${result.errors?.length ? `，${result.errors.length} 个失败：${formatBackfillError(firstError)}` : ''}`);
-    } catch (e: any) {
-      setNodeBackfillResult(`知识节点回填失败: ${e.message}`);
-    } finally {
-      setNodeBackfilling(false);
-    }
-  };
-
-  const handleAutoNodeBackfill = async () => {
-    if (autoNodeBackfilling || nodeBackfilling) return;
-    stopNodeBackfillRef.current = false;
-    setAutoNodeBackfilling(true);
-    setNodeBackfillResult('自动回填知识节点已开始，每批 5 个。');
-
-    let rounds = 0;
-    let processedTotal = 0;
-
-    try {
-      while (!stopNodeBackfillRef.current) {
-        rounds++;
-        const result = await requestKnowledgeNodeBackfill(BACKFILL_BATCH_SIZE);
-        const firstError = result.errors?.[0]?.error;
-        processedTotal += result.processed;
-
-        if (result.processed === 0 && !result.errors?.length) {
-          setNodeBackfillResult(`知识节点自动回填完成：共处理 ${processedTotal} 个。`);
-          break;
-        }
-
-        const waitSeconds = isRateLimitError(firstError) ? BACKFILL_RATE_LIMIT_WAIT_SECONDS : BACKFILL_WAIT_SECONDS;
-        setNodeBackfillResult(`知识节点自动回填第 ${rounds} 轮：成功 ${result.processed}/${result.total} 个，累计 ${processedTotal} 个${result.errors?.length ? `，${result.errors.length} 个失败：${formatBackfillError(firstError)}` : ''}。${waitSeconds} 秒后继续。`);
-        await wait(waitSeconds);
-      }
-    } catch (e: any) {
-      setNodeBackfillResult(`知识节点自动回填失败: ${e.message}`);
-    } finally {
-      setAutoNodeBackfilling(false);
-    }
-  };
-
-  const handleStopBackfill = () => {
-    stopBackfillRef.current = true;
-    setBackfillResult('正在停止自动回填，当前等待结束后停止。');
-  };
-
-  const handleStopNodeBackfill = () => {
-    stopNodeBackfillRef.current = true;
-    setNodeBackfillResult('正在停止知识节点自动回填，当前等待结束后停止。');
   };
 
   return (
@@ -319,13 +222,6 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
               <p className="text-xs text-gray-500">摘要、图谱抽取与推荐调用服务端 AI 接口处理你的内容；原始内容始终保留在你的账户内。</p>
             </div>
           </div>
-          <div className="px-4 py-3 flex items-start gap-3">
-            <Database className="w-5 h-5 text-gray-500 flex-none mt-0.5" />
-            <div>
-              <p className="text-sm text-gray-900">未启用能力</p>
-              <p className="text-xs text-gray-500">系统通知、自动备份、深色模式与 OCR/语音解析尚未实现，此处不提供无效开关。</p>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -339,124 +235,103 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
         </div>
         <div className="p-4 space-y-3">
           <div>
-            <p className="text-xs text-gray-600 mb-1">文本与图谱提取（服务端）</p>
-            {models ? (
-              <p className="text-xs text-gray-800 bg-gray-50 border border-gray-200 px-3 py-2 rounded-lg">
-                {models.ids.filter((id) => !/bge|embed/i.test(id)).slice(0, 3).join('、') || '服务端未返回模型'}
-                {models.ids.filter((id) => !/bge|embed/i.test(id)).length > 3 ? ` 等 ${models.ids.filter((id) => !/bge|embed/i.test(id)).length} 个模型` : ''}
-              </p>
-            ) : (
-              <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 px-3 py-2 rounded-lg">
-                {modelsError || '加载中...'}
-              </p>
-            )}
+            <p className="text-xs text-gray-600 mb-1">文本 AI（摘要 / 图谱 / 推荐）</p>
+            <p className="text-xs text-gray-800 bg-gray-50 border border-gray-200 px-3 py-2 rounded-lg">
+              服务端文本模型已启用（MiniMax 兼容接口，可用以"服务状态检测"为准）
+            </p>
           </div>
           <div>
             <p className="text-xs text-gray-600 mb-1">语义搜索嵌入</p>
             <p className="text-xs text-gray-800 bg-gray-50 border border-gray-200 px-3 py-2 rounded-lg">
-              BAAI/bge-m3（1024 维）
+              BAAI/bge-m3（1024 维，向量后台自动生成）
             </p>
           </div>
           <div>
-            <p className="text-xs text-gray-600 mb-1">未启用能力</p>
-            <p className="flex items-center gap-2 text-xs text-gray-500">
-              <XCircle className="w-3.5 h-3.5 text-gray-400 flex-none" />
-              图像识别 / 语音转写 / 文档解析（上传仅保存元数据）
+            <p className="text-xs text-gray-600 mb-1">多模态</p>
+            <p className="text-xs text-gray-800 bg-gray-50 border border-gray-200 px-3 py-2 rounded-lg">
+              图片 OCR（浏览器本地）、语音识别（浏览器原生）、文档解析（pdf/docx）
             </p>
           </div>
         </div>
       </div>
 
-      {/* 语义搜索 */}
+      {/* 我的 API Key */}
       <div className="bg-white mb-4">
         <div className="px-4 py-3 border-b border-gray-200">
           <h3 className="text-sm font-medium text-gray-700 flex items-center gap-2">
-            <Sparkles className="w-4 h-4" />
-            语义搜索
+            <Lock className="w-4 h-4 text-gray-500" />
+            我的 API Key
           </h3>
         </div>
-
         <div className="p-4 space-y-3">
           <p className="text-xs text-gray-500">
-            语义搜索基于向量相似度匹配，需要先为已有数据生成 embedding 向量。
+            输入你自己的服务 Key（如 MiniMax/DeepSeek），启用后所有 AI 调用优先使用它；只保存在本设备（混淆存储，不明文落盘、不上传）。
           </p>
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-gray-600">捕获内容索引</p>
+          <input
+            type="password"
+            value={apiKeyInput}
+            onChange={(e) => setApiKeyInput(e.target.value)}
+            placeholder={customEnabled ? '已启用自定义 Key（输入可替换）' : '粘贴你的 Key（留空则用系统 Key）'}
+            autoComplete="off"
+            className="w-full px-3 py-2 border border-gray-200 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent rounded-lg"
+          />
+          <div className="flex items-center gap-3">
+            <button
+              onClick={saveCustomKey}
+              className="flex-1 px-4 py-2 bg-brand text-white text-sm font-medium hover:bg-brand-strong transition-colors rounded-xl"
+            >
+              {keySaved ? '已保存 ✓' : (customEnabled ? '保存 / 更新 Key' : '启用我的 Key')}
+            </button>
+            {customEnabled && (
+              <button
+                onClick={() => { clearCustomApiKey(); setCustomEnabled(false); setApiKeyInput(''); }}
+                className="px-4 py-2 text-sm text-gray-500 border border-gray-200 hover:bg-gray-50 transition-colors rounded-xl"
+              >
+                改用系统 Key
+              </button>
+            )}
           </div>
-          <motion.button
-            whileTap={{ scale: 0.95 }}
-            onClick={handleBackfill}
-            disabled={backfilling || autoBackfilling}
-            className="w-full px-4 py-2.5 bg-brand text-white text-sm font-medium hover:bg-brand-strong transition-colors disabled:bg-brand/50 flex items-center justify-center gap-2 rounded-xl shadow-card"
-          >
-            {backfilling ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                回填中...
-              </>
-            ) : (
-              '回填 Embedding 向量'
-            )}
-          </motion.button>
-          <motion.button
-            whileTap={{ scale: 0.95 }}
-            onClick={autoBackfilling ? handleStopBackfill : handleAutoBackfill}
-            disabled={backfilling}
-            className="w-full px-4 py-2.5 bg-brand-muted text-white text-sm font-medium hover:brightness-110 transition-all disabled:bg-brand-muted/50 flex items-center justify-center gap-2 rounded-xl"
-          >
-            {autoBackfilling ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                停止自动回填
-              </>
-            ) : (
-              '自动回填捕获内容'
-            )}
-          </motion.button>
-          {backfillResult && (
-            <p className="text-xs text-gray-600 bg-gray-50 p-2 rounded-lg">
-              {backfillResult}
-            </p>
-          )}
+          <p className="text-xs text-gray-400">
+            当前状态：{customEnabled ? '使用你自己的 Key' : '使用系统提供的 Key'}
+          </p>
+        </div>
+      </div>
 
-          <div className="pt-3 border-t border-gray-100 space-y-2">
-            <p className="text-xs font-medium text-gray-600">知识节点索引</p>
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              onClick={handleNodeBackfill}
-              disabled={nodeBackfilling || autoNodeBackfilling}
-              className="w-full px-4 py-2.5 bg-brand text-white text-sm font-medium hover:bg-brand-strong transition-colors disabled:bg-brand/50 flex items-center justify-center gap-2 rounded-xl shadow-card"
-            >
-              {nodeBackfilling ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  回填知识节点中...
-                </>
+      {/* 服务状态检测 */}
+      <div className="bg-white mb-4">
+        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+          <h3 className="text-sm font-medium text-gray-700 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-gray-500" />
+            服务状态检测
+          </h3>
+          <button
+            onClick={runServiceChecks}
+            disabled={checking}
+            className="px-3 py-1.5 text-xs text-brand border border-brand/30 hover:bg-brand-soft disabled:opacity-50 transition-colors flex items-center gap-1 rounded-lg"
+          >
+            {checking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            {checking ? '检测中...' : '重新检测'}
+          </button>
+        </div>
+        <div className="px-4 py-2 bg-gray-50/60 border-b border-gray-50">
+          <p className="text-[11px] text-gray-400">上次检测：{lastCheckedAt ? lastCheckedAt : '进入本页自动检测'}</p>
+        </div>
+        <div className="divide-y divide-gray-50">
+          {services.map((s) => (
+            <div key={s.name} className="px-4 py-2.5 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm text-gray-800">{s.name}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{s.detail}</p>
+              </div>
+              {s.state === 'pending' ? (
+                <span className="flex-none text-xs font-medium text-gray-400 bg-gray-100 px-2 py-1 rounded-full">检测中</span>
               ) : (
-                '回填知识节点 Embedding'
+                <span className={`flex-none text-xs font-medium px-2 py-1 rounded-full ${s.state === 'ok' ? 'bg-success-soft text-success' : s.state === 'warn' ? 'bg-warning-soft text-warning' : 'bg-danger-soft text-danger'}`}>
+                  {s.state === 'ok' ? '正常' : s.state === 'warn' ? '降级' : '异常'}
+                </span>
               )}
-            </motion.button>
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              onClick={autoNodeBackfilling ? handleStopNodeBackfill : handleAutoNodeBackfill}
-              disabled={nodeBackfilling}
-              className="w-full px-4 py-2.5 bg-brand-muted text-white text-sm font-medium hover:brightness-110 transition-all disabled:bg-brand-muted/50 flex items-center justify-center gap-2 rounded-xl"
-            >
-              {autoNodeBackfilling ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  停止知识节点自动回填
-                </>
-              ) : (
-                '自动回填知识节点'
-              )}
-            </motion.button>
-            {nodeBackfillResult && (
-              <p className="text-xs text-gray-600 bg-gray-50 p-2 rounded-lg">
-                {nodeBackfillResult}
-              </p>
-            )}
-          </div>
+            </div>
+          ))}
         </div>
       </div>
 

@@ -1,5 +1,6 @@
 import { buildKnowledgeNodeEmbeddingText, generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
 import { resolveRequestScope } from '../_lib/requestScope.js';
+import { resolveApiKey } from '../_lib/apiKey.js';
 // Vercel Hobby 默认函数时长 10s, 节点 embedding 批量调用需留出余量
 export const maxDuration = 60;
 
@@ -13,7 +14,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const apiKey = process.env.MINIMAX_API_KEY || '';
+  const apiKey = resolveApiKey(req) || process.env.MINIMAX_API_KEY || '';
   if (!apiKey) {
     res.status(500).json({ error: 'Missing MINIMAX_API_KEY on server' });
     return;

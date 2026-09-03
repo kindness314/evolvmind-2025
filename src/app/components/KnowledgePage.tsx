@@ -1690,21 +1690,20 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
 
 
         {(drillSuperId !== null || drillTopicId !== null) ? (
-          <div className="absolute top-3 left-4 z-10 flex items-center gap-2 bg-white/95 backdrop-blur border border-gray-200 px-3 py-1.5 shadow-card rounded-full whitespace-nowrap max-w-[calc(100%-2rem)] overflow-hidden">
-            <button onClick={drillBack} className="text-[11px] text-gray-500 hover:text-indigo-600 font-medium whitespace-nowrap">
+          <div className="absolute top-3 right-4 z-10 flex flex-wrap items-center gap-x-1.5 gap-y-1 bg-white/95 backdrop-blur border border-gray-200 px-3 py-1.5 shadow-card rounded-2xl max-w-[calc(100%-2rem)]">            <button onClick={drillBack} className="text-[11px] text-gray-500 hover:text-indigo-600 font-medium whitespace-nowrap">
               {drillTopicId !== null ? '中话题' : '总览'}
             </button>
             {drillSuperId !== null ? (
               <>
-                <span className="text-gray-300">›</span>
-                <span className="w-2.5 h-2.5 flex-none" style={{ borderRadius: '50%', backgroundColor: communityAnalysis.superTopics.find((s) => s.id === drillSuperId)?.color || '#94A3B8' }}></span>
+                <span className="text-gray-300 whitespace-nowrap">›</span>
+                <span className="w-2 h-2 flex-none shrink-0" style={{ borderRadius: '50%', backgroundColor: communityAnalysis.superTopics.find((s) => s.id === drillSuperId)?.color || '#94A3B8' }}></span>
                 <span className="text-xs font-semibold text-gray-800 whitespace-nowrap">{superDisplayName(drillSuperId, communityAnalysis.superTopics.find((s) => s.id === drillSuperId)?.name || '')}</span>
               </>
             ) : null}
             {drillTopicId !== null ? (
               <>
-                <span className="text-gray-300">›</span>
-                <span className="w-2.5 h-2.5 flex-none" style={{ borderRadius: '50%', backgroundColor: communityAnalysis.topics.find((t) => t.communityId === drillTopicId)?.color || '#94A3B8' }}></span>
+                <span className="text-gray-300 whitespace-nowrap">›</span>
+                <span className="w-2 h-2 flex-none shrink-0" style={{ borderRadius: '50%', backgroundColor: communityAnalysis.topics.find((t) => t.communityId === drillTopicId)?.color || '#94A3B8' }}></span>
                 <span className="text-xs font-semibold text-gray-800 whitespace-nowrap">{topicDisplayName(drillTopicId, communityAnalysis.topics.find((t) => t.communityId === drillTopicId)?.name || '')}</span>
               </>
             ) : null}
@@ -2326,7 +2325,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
         {sidePanelCollapsed && (
           <button
             onClick={() => setSidePanelCollapsed(false)}
-            className="absolute top-4 left-4 z-10 flex items-center gap-1.5 px-2.5 py-1.5 bg-white/95 backdrop-blur border border-gray-200 shadow-card hover:bg-gray-50 transition-colors text-xs text-gray-600 rounded-xl"
+            className="absolute top-3 left-4 z-10 flex items-center gap-1.5 px-2.5 py-1.5 bg-white/95 backdrop-blur border border-gray-200 shadow-card hover:bg-gray-50 transition-colors text-xs text-gray-600 rounded-xl"
             aria-label="展开话题面板"
             title="展开话题面板"
           >

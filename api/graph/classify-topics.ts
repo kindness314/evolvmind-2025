@@ -16,13 +16,13 @@
  * 认证：Demo（X-EvolvMind-Demo 头或 body.demo）或真实 Bearer；匿名 401（发布门禁 4）。
  */
 import { resolveRequestScope } from '../_lib/requestScope.js';
+import { resolveApiKey } from '../_lib/apiKey.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '../_lib/embedding.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const MINIMAX_API_KEY = process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
 
 export const maxDuration = 60;
@@ -111,8 +111,9 @@ function buildPrompt(clusters: ClusterInput[]): string {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const apiKey = resolveApiKey(req);
   if (req.method === 'GET') {
-    res.status(200).json({ ok: true, route: '/api/graph/classify-topics', hasKey: Boolean(MINIMAX_API_KEY) });
+    res.status(200).json({ ok: true, route: '/api/graph/classify-topics', hasKey: Boolean(apiKey) });
     return;
   }
   if (req.method !== 'POST') {
@@ -168,13 +169,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // 2. 未命中簇调 LLM 生成（批量一次调用）
   const model = process.env.MINIMAX_MODEL || 'MiniMax-M2.5';
-  if (toGenerate.length > 0 && MINIMAX_API_KEY) {
+  if (toGenerate.length > 0 && apiKey) {
     const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
     const urls = Array.from(
       new Set([`${baseUrl.replace(/\/$/, '')}/chat/completions`, `${stripTrailingV1(baseUrl).replace(/\/$/, '')}/chat/completions`]),
     );
     for (const url of urls) {
-      const r = await callChatCompletion(url, MINIMAX_API_KEY, model, buildPrompt(toGenerate));
+      const r = await callChatCompletion(url, apiKey, model, buildPrompt(toGenerate));
       if (!r.ok || !r.json) continue;
       const text = extractMessageText(r.json);
       // LLM 输出可能带标记/多余文字：从尾部提取合法 JSON 数组

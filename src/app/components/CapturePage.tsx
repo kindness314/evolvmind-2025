@@ -10,6 +10,69 @@ import { toast } from 'sonner';
 import { MAX_FILE_SIZE, isSupportedFile, type CaptureMode } from '../../lib/uploadValidation';
 
 
+/** 读取 txt/md 文本文件的真实正文（作为 content 供总结/图谱）；失败返回空字符串 */
+function readTextFile(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => resolve('');
+    reader.readAsText(file);
+  });
+}
+
+/** 判断文件是否为可直接读正文的文本（txt/md） */
+function isPlainTextFile(file: File): boolean {
+  const ext = file.name.split('.').pop()?.toLowerCase() || '';
+  return ext === 'txt' || ext === 'md' || file.type === 'text/plain' || file.type === 'text/markdown';
+}
+
+/** 判断文件是否为需后端正文提取的文档（pdf/docx） */
+function isPdfDocxFile(file: File): boolean {
+  const ext = file.name.split('.').pop()?.toLowerCase() || '';
+  return ext === 'pdf' || ext === 'docx';
+}
+
+/** 浏览器本地 OCR（tesseract.js）：识别图片文字，返回文本；失败返回空字符串 */
+async function recognizeImageText(file: File): Promise<string> {
+  try {
+    const { createWorker } = await import('tesseract.js');
+    const worker = await createWorker('chi_sim', 1, { logger: () => {} });
+    try {
+      const { data } = await worker.recognize(file);
+      return data?.text?.trim() || '';
+    } finally {
+      await worker.terminate();
+    }
+  } catch {
+    return '';
+  }
+}
+
+/** 调后端提取 pdf/docx 正文（scope 认证：demo 传 demo:true，真实传 Bearer token）；失败返回空字符串 */
+async function extractDocumentText(storagePath: string, fileName: string, mimeType: string): Promise<string> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const body: Record<string, unknown> = { storage_path: storagePath, file_name: fileName, mime_type: mimeType };
+    if (!session?.access_token) {
+      body.demo = true;
+    } else {
+      headers.Authorization = `Bearer ${session.access_token}`;
+    }
+    const resp = await fetch('/api/documents/extract', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) return '';
+    const data = (await resp.json()) as { ok?: boolean; text?: string };
+    return data.text || '';
+  } catch {
+    return '';
+  }
+}
+
+
 interface GraphProcessResult {
   nodesProcessed: number;
   linksProcessed: number;
@@ -51,6 +114,49 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
   const [graphStatus, setGraphStatus] = useState<'idle' | 'processing' | 'done' | 'error'>('idle');
   const [graphResult, setGraphResult] = useState<GraphProcessResult | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
+  // 语音识别（Web Speech API：手机浏览器原生，免费，无需后端 ASR）
+  const [recognizing, setRecognizing] = useState(false);
+  const recognitionRef = useRef<{ stop: () => void } | null>(null);
+  const speechSupported = typeof window !== 'undefined' && Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+  const startVoiceRecognition = () => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
+      toast.error('当前浏览器/手机不支持语音识别');
+      return;
+    }
+    const rec = new SR();
+    rec.lang = 'zh-CN';
+    rec.continuous = false;
+    rec.interimResults = false;
+    rec.onresult = (e: any) => {
+      const transcript = e.results?.[0]?.[0]?.transcript || '';
+      if (transcript) {
+        setTextInput((prev) => (prev ? prev + '\n' + transcript : transcript));
+        setFile(null); setPreviewUrl(null);
+      }
+    };
+    rec.onerror = (e: any) => {
+      if (e?.error !== 'no-speech' && e?.error !== 'aborted') {
+        toast.error('语音识别失败：' + (e?.error || '未知'));
+      }
+      setRecognizing(false);
+      recognitionRef.current = null;
+    };
+    rec.onend = () => {
+      setRecognizing(false);
+      recognitionRef.current = null;
+    };
+    recognitionRef.current = rec;
+    try {
+      rec.start();
+      setRecognizing(true);
+    } catch {
+      toast.error('无法启动语音识别，请确认浏览器权限');
+      setRecognizing(false);
+      recognitionRef.current = null;
+    }
+  };
+  const stopVoiceRecognition = () => { recognitionRef.current?.stop(); setRecognizing(false); recognitionRef.current = null; };
   const persistGraphStatus = async (itemId: string, status: 'completed' | 'failed', errorMessage?: string) => {
     if (!itemId) return;
     if (status === 'completed') {
@@ -142,6 +248,12 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
     const url = URL.createObjectURL(selectedFile);
     setAnalyzeError(null);
     setPreviewUrl(url);
+    // 图片：浏览器本地 OCR（tesseract.js）识别文字 → 存 textInput，供编辑与后续总结
+    if (mode === 'photo') {
+      void recognizeImageText(selectedFile).then((text) => {
+        if (text) setTextInput(text);
+      });
+    }
     setExtractedData({
       title: selectedFile.name.split('.')[0],
       keywords: [selectedFile.type.split('/')[0] || '文件', '新导入'],
@@ -177,7 +289,20 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
           .upload(filePath, file);
         if (uploadError) throw uploadError;
 
-        finalContent = `文件名: ${file.name}\n文件类型: ${file.type || '未知'}\n文件大小: ${file.size} bytes`;
+        // 图片：优先用浏览器本地 OCR 文字（已存 textInput）；否则 file 元数据。
+        // txt/md：前端读文件正文；pdf/docx：调后端提取（pdf-parse/mammoth）。
+        // 注意：此处 await 串行完成，避免和保存后的摘要/图谱/向量并发导致 MiniMax QPM(每分钟请求)超限(429)。
+        let fileText = '';
+        if (mode === 'photo') {
+          fileText = textInput; // OCR 文字（可能为空，则 fallback 元数据）
+        } else if (isPlainTextFile(file)) {
+          fileText = await readTextFile(file);
+        } else if (isPdfDocxFile(file)) {
+          fileText = await extractDocumentText(filePath, file.name, file.type || '');
+        }
+        finalContent = fileText
+          ? fileText
+          : `文件名: ${file.name}\n文件类型: ${file.type || '未知'}\n文件大小: ${file.size} bytes`;
         storageMeta = {
           storage_path: filePath,
           file_name: file.name,
@@ -212,10 +337,9 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
       window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
 
       // O1: 保存后自动提取标题/关键词/摘要(不再手动触发), 成败并入处理状态
-      const contentToAnalyze =
-        mode === 'text'
-          ? textInput
-          : `文件名: ${file?.name || ''}\n文件类型: ${file?.type || ''}\n文件大小: ${file?.size || 0} bytes`;
+      // O1: 保存后自动提取标题/关键词/摘要(不再手动触发), 成败并入处理状态
+      // finalContent 已含真实正文（text/txt/md）；图片/语音/文档为元数据占位（正文提取见后续）
+      const contentToAnalyze = finalContent;
       setAnalyzeError(null);
       const outcome = await analyzeAndPersist(itemId, contentToAnalyze);
       if (!outcome.ok) {
@@ -243,71 +367,60 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
         keywords: outcome.keywords,
       });
 
-      // fire-and-forget: 为新记录生成 embedding 向量; 失败已在函数内落 failed;
-      // 无论成败都通知数据页增量刷新, 并参与"全部完成自动回数据页"判定
-      void generateEmbeddingForRow(itemId)
-        .then(() => {
-          embedSettledRef.current = true;
-          embedFailedRef.current = false;
-          window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
-          tryAutoReturnData();
-        })
-        .catch(() => {
-          embedSettledRef.current = true;
-          embedFailedRef.current = true;
-          toast.error('向量生成失败，可在数据页重试');
-          window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
-        });
+      // O2 多模态正文提取已在 finalContent 串行完成；为避免保存时多个 MiniMax 请求叠加触发
+      // QPM(每分钟请求)超限(429)，图谱构建延后到保存成功返回后（后台 fire-and-forget）执行。
+      // 语义向量生成已"后台化"：不再由保存流程触发，改由 DataPage 后台轮询时对缺失向量补算。
+      setTimeout(() => {
+        // 启动知识图谱构建并追踪状态
+        const contentForGraph =
+          mode === 'text'
+            ? textInput
+            : `标题: ${outcome.title}\n摘要: ${outcome.summary}\n关键词: ${outcome.keywords.join(', ')}\n资源: ${finalContent}`;
 
-      // 启动知识图谱构建并追踪状态
-      const contentForGraph =
-        mode === 'text'
-          ? textInput
-          : `标题: ${outcome.title}\n摘要: ${outcome.summary}\n关键词: ${outcome.keywords.join(', ')}\n资源: ${finalContent}`;
+        setGraphStatus('processing');
 
-      setGraphStatus('processing');
-
-      (async () => {
-        try {
-          const setup = await checkGraphSetup();
-          if (!setup.schemaOk) {
-            const msg = setup.schemaError?.toLowerCase().includes('invalid api key')
-              ? 'Supabase 连接配置错误'
-              : '数据库未应用图谱迁移';
+        (async () => {
+          try {
+            const setup = await checkGraphSetup();
+            if (!setup.schemaOk) {
+              const msg = setup.schemaError?.toLowerCase().includes('invalid api key')
+                ? 'Supabase 连接配置错误'
+                : '数据库未应用图谱迁移';
+              setGraphError(msg);
+              setGraphStatus('error');
+              await persistGraphStatus(itemId, 'failed', msg);
+              graphFailedRef.current = true;
+              return;
+            }
+            if (!setup.llmOk) {
+              const msg = 'LLM 未配置';
+              setGraphError(msg);
+              setGraphStatus('error');
+              await persistGraphStatus(itemId, 'failed', msg);
+              graphFailedRef.current = true;
+              return;
+            }
+            const result = await buildKnowledgeGraphFromContent({ content: contentForGraph, capturedId: itemId });
+            setGraphResult(result);
+            setGraphStatus('done');
+            await persistGraphStatus(itemId, 'completed');
+            graphSettledRef.current = true;
+            graphFailedRef.current = false;
+          } catch (e: unknown) {
+            console.error('知识图谱更新失败:', e);
+            const msg = stringifyError(e);
             setGraphError(msg);
             setGraphStatus('error');
             await persistGraphStatus(itemId, 'failed', msg);
+            graphSettledRef.current = true;
             graphFailedRef.current = true;
-            return;
+          } finally {
+            // 无论成功失败: 通知数据页增量刷新, 并尝试自动回数据页
+            window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
+            tryAutoReturnData();
           }
-          if (!setup.llmOk) {
-            const msg = 'LLM 未配置';
-            setGraphError(msg);
-            setGraphStatus('error');
-            await persistGraphStatus(itemId, 'failed', msg);
-            graphFailedRef.current = true;
-            return;
-          }
-          const result = await buildKnowledgeGraphFromContent({ content: contentForGraph, capturedId: itemId });
-          setGraphResult(result);
-          setGraphStatus('done');
-          await persistGraphStatus(itemId, 'completed');
-          graphSettledRef.current = true;
-          graphFailedRef.current = false;
-        } catch (e: unknown) {
-          console.error('知识图谱更新失败:', e);
-          const msg = stringifyError(e);
-          setGraphError(msg);
-          setGraphStatus('error');
-          await persistGraphStatus(itemId, 'failed', msg);
-          graphSettledRef.current = true;
-          graphFailedRef.current = true;
-        } finally {
-          // 无论成功失败: 通知数据页增量刷新, 并尝试自动回数据页
-          window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
-          tryAutoReturnData();
-        }
-      })();
+        })();
+      }, 4000);
     } catch (error) {
       console.error('保存失败:', error);
       alert('保存失败，请稍后重试');
@@ -526,48 +639,66 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
             )}
 
             {mode === 'photo' && (
-              <div className="w-full min-h-64 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-gray-50 overflow-hidden rounded-2xl"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                {previewUrl ? (
-                  <img src={previewUrl} alt="Preview" className="w-full h-auto object-contain max-h-96" />
-                ) : (
-                  <>
-                    <Camera className="w-12 h-12 mb-2 text-gray-400" />
-                    <p className="text-sm text-gray-400">点击上传照片</p>
-                  </>
+              <div className="flex flex-col gap-3">
+                <div className="w-full min-h-40 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-gray-50 overflow-hidden rounded-2xl"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {previewUrl ? (
+                    <img src={previewUrl} alt="Preview" className="w-full h-auto object-contain max-h-72" />
+                  ) : (
+                    <>
+                      <Camera className="w-12 h-12 mb-2 text-gray-400" />
+                      <p className="text-sm text-gray-400">点击上传照片</p>
+                    </>
+                  )}
+                </div>
+                {previewUrl && (
+                  <div>
+                    <p className="text-xs text-gray-400 mb-1">识别到的文字（可编辑，保存时作为内容）</p>
+                    <textarea
+                      value={textInput}
+                      onChange={(e) => setTextInput(e.target.value)}
+                      placeholder="浏览器正在识别图片文字…"
+                      className="w-full h-24 p-3 border border-gray-200 text-sm text-gray-900 placeholder:text-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent rounded-xl"
+                    />
+                  </div>
                 )}
               </div>
             )}
 
             {mode === 'audio' && (
-              <div className="w-full h-64 border border-gray-200 flex flex-col items-center justify-center bg-gray-50 rounded-2xl"
+              <div className="w-full h-64 border border-gray-200 flex flex-col items-center justify-center bg-gray-50 rounded-2xl p-4"
               >
-                {previewUrl ? (
-                  <div className="flex flex-col items-center">
-                    <div className="w-16 h-16 bg-brand flex items-center justify-center mb-4 cursor-pointer"
-                      style={{ borderRadius: '50%' }}
-                    >
-                      <Play className="w-8 h-8 text-white" />
+                {textInput ? (
+                  <div className="w-full flex flex-col h-full">
+                    <p className="text-xs text-gray-400 mb-2">识别结果（可继续说话补充或直接保存）</p>
+                    <div className="flex-1 overflow-y-auto text-sm text-gray-900 whitespace-pre-wrap border border-gray-100 rounded-lg p-3 bg-white">
+                      {textInput}
                     </div>
-                    <p className="text-sm text-gray-600">音频已就绪: {file?.name}</p>
-                    <button 
-                      onClick={() => { setFile(null); setPreviewUrl(null); }}
-                      className="mt-4 text-xs text-red-500 flex items-center gap-1"
-                    >
-                      <Trash2 className="w-3 h-3" /> 重新录制
-                    </button>
+                    <div className="flex items-center justify-between mt-3">
+                      <button
+                        onClick={recognizing ? stopVoiceRecognition : startVoiceRecognition}
+                        className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-white rounded-lg ${recognizing ? 'bg-red-500' : 'bg-brand hover:bg-brand-strong'}`}
+                      >
+                        <Mic className="w-4 h-4" />
+                        {recognizing ? '停止' : '继续说话'}
+                      </button>
+                      <button onClick={() => setTextInput('')} className="text-xs text-red-500 flex items-center gap-1">
+                        <Trash2 className="w-3 h-3" /> 清空
+                      </button>
+                    </div>
                   </div>
                 ) : (
-                  <>
-                    <div className="w-16 h-16 bg-red-500 flex items-center justify-center mb-4 animate-pulse cursor-pointer"
+                  <div className="flex flex-col items-center">
+                    <div
+                      className={`w-16 h-16 flex items-center justify-center mb-4 cursor-pointer transition-colors ${recognizing ? 'bg-red-500' : 'bg-brand'} ${recognizing ? '' : 'animate-pulse'}`}
                       style={{ borderRadius: '50%' }}
-                      onClick={() => fileInputRef.current?.click()}
+                      onClick={recognizing ? stopVoiceRecognition : startVoiceRecognition}
                     >
                       <Mic className="w-8 h-8 text-white" />
                     </div>
-                    <p className="text-sm text-gray-600">点击上传录音文件</p>
-                  </>
+                    <p className="text-sm text-gray-600">{recognizing ? '正在听，点一下停止…' : (speechSupported ? '点击开始说话' : '当前环境不支持语音识别')}</p>
+                  </div>
                 )}
               </div>
             )}

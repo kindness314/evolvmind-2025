@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
+import { resolveApiKey } from './_lib/apiKey.js';
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
 
@@ -32,7 +33,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const apiKey = process.env.MINIMAX_API_KEY || '';
+  const apiKey = resolveApiKey(req) || process.env.MINIMAX_API_KEY || '';
   const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
 
   if (!apiKey) {

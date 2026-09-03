@@ -16,6 +16,7 @@
  */
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope, type RequestScope } from './_lib/requestScope.js';
+import { resolveApiKey } from './_lib/apiKey.js';
 import { computeThemeDirections, splitByWindow, tagFrequency, computeDepthProfile, findImplicitPairs, type ThemeTrend } from './_lib/insights.js';
 import { detectCommunities, evolutionOf, describeCommunity, type Community } from './_lib/community.js';
 import { isTrivialNodeName, isNoiseCapture } from './_lib/noise.js';
@@ -986,7 +987,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // 尝试 LLM
-    const apiKey = process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
+    const apiKey = resolveApiKey(req);
     const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
     const preferredModel = process.env.MINIMAX_MODEL || 'abab6.5s-chat';
 

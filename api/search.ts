@@ -4,6 +4,7 @@
  */
 import { generateEmbedding, type VercelRequest, type VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope } from './_lib/requestScope.js';
+import { resolveApiKey } from './_lib/apiKey.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
@@ -87,7 +88,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const apiKey = process.env.MINIMAX_API_KEY || '';
+  const apiKey = resolveApiKey(req) || process.env.MINIMAX_API_KEY || '';
   if (!apiKey) {
     res.status(503).json({ error: '语义搜索不可用', detail: 'Missing MINIMAX_API_KEY on server', semanticAvailable: false });
     return;
