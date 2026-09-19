@@ -133,9 +133,9 @@ Git 状态（2026-09-19）：09-01 `83a01bc`（语义主题图谱+图谱驱动�
 
 以下事项影响运行行为、部署链路或历史兼容性，需单独确认后处理，不混入日常改动：
 
-1. **Supabase Edge Function 遗留目录** `supabase/functions/server/`：主后端是 Vercel `api/*`，疑似遗留代码。删除前确认是否被某部署环境引用。
-2. **未使用依赖清理**：`@mui/material`、`@mui/icons-material`、`@emotion/*`、`react-slick`、`react-dnd`、`react-dnd-html5-backend`、`react-responsive-masonry`、`react-popper`——逐组验证删除后 `npm run build` 无回归。
-3. **Vite `/api/llm` dev proxy**：`vite.config.ts` 早期原型遗留，当前架构禁止前端直连 LLM provider；删除前确认无本地调试依赖。
+1. ~~**Supabase Edge Function 遗留目录** `supabase/functions/server/`~~：✅ 已删（2026-09-19；全仓搜索仅 IMPROVEMENT.md 自引用，5 个月未动的死代码）
+2. ~~**未使用依赖清理**~~：✅ 已确认无需操作（2026-09-19；`@mui/*`/`react-slick`/`react-dnd` 等早已不在 package.json；lock 中仅剩合法的 `@radix-ui/react-popper` 与 motion 传递依赖 `@emotion/is-prop-valid`）
+3. ~~**Vite `/api/llm` dev proxy**~~：✅ 已删（2026-09-19；全仓搜索无 `/api/llm` 调用，安全隐患消除）
 4. **大规模目录迁移**：页面组件/业务逻辑逐步模块化（`src/features/*`），先抽 services/lib/types，再拆 UI 子组件，最后清理旧路径；不一次性大移动。
 5. **RLS 与 demo mode 策略**：demo 共享 UUID、生产用户隔离、storage policy 是否进一步收紧——调整需 migration，先确认产品决策。
 
