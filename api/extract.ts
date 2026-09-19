@@ -337,10 +337,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     'MiniMax-M2.5',
     'MiniMax-M2.1',
     'MiniMax-M2',
-    'abab6.5s-chat',
-    'abab6.5-chat',
-    'abab6-chat',
-    'gpt-3.5-turbo',
   ].filter(Boolean)));
 
   let lastError: any = null;

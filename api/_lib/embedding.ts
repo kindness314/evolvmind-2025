@@ -73,6 +73,13 @@ export async function generateEmbedding(params: {
   };
   const MAX_ATTEMPTS = 4; // 原始 1 次 + 退避重试 3 次 (2s/4s/8s)
 
+  // Key 回退（2026-09 修复）：chat key（resolveApiKey 首选 MINIMAX_CHAT_API_KEY）可能没有
+  // /embeddings 权限（403 ModelNotAllowed），而 MINIMAX_API_KEY 实测有 bge-m3 权限。
+  // 调用方 key 优先；失败时回退到环境 MINIMAX_API_KEY（去重）。
+  const fallbackKey = (process.env.MINIMAX_API_KEY || '').trim();
+  const keysToTry = Array.from(new Set([params.apiKey, fallbackKey].filter(Boolean)));
+
+  for (const apiKey of keysToTry) {
   for (const model of models) {
     for (const url of urlsToTry) {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -86,7 +93,7 @@ export async function generateEmbedding(params: {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${params.apiKey}`,
+                Authorization: `Bearer ${apiKey}`,
               },
               body: JSON.stringify({
                 model,
@@ -162,6 +169,7 @@ export async function generateEmbedding(params: {
         }
       }
     }
+  }
   }
 
   const lastErrorText = JSON.stringify(lastError);

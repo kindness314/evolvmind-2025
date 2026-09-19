@@ -24,6 +24,8 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
   const [recsLoading, setRecsLoading] = useState(false);
   const [dismissedRecIds, setDismissedRecIds] = useState<Set<string>>(new Set());
   const [clickedRecIds, setClickedRecIds] = useState<Set<string>>(new Set());
+  const [expandedRecId, setExpandedRecId] = useState<string | null>(null);
+  const [summaryDetailExpanded, setSummaryDetailExpanded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,28 +154,45 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                               <div className="flex items-start justify-between gap-2">
                                 <div className="min-w-0 flex-1">
                                   <span className="text-sm text-gray-800 font-medium">{rec.title}</span>
-                                  <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{rec.reason}</p>
                                   {rec.action && (
                                     <div className="flex items-start gap-1 mt-1">
                                       <Lightbulb className="w-3 h-3 text-brand mt-0.5 flex-none" />
                                       <p className="text-xs text-brand-strong leading-relaxed">{rec.action}</p>
                                     </div>
                                   )}
-                                  {rec.evidence && rec.evidence.length > 0 && (
-                                    <div className="flex flex-wrap gap-1 mt-1.5">
-                                      {rec.evidence.map((ev) => (
-                                        <span
-                                          key={`${ev.type}-${ev.id}`}
-                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-50 border border-gray-100 text-[11px] text-gray-500 max-w-full"
-                                          style={{ borderRadius: 6 }}
-                                        >
-                                          {ev.type === 'node'
-                                            ? <Tag className="w-2.5 h-2.5 flex-none" />
-                                            : <span className="w-1.5 h-1.5 rounded-full bg-gray-300 flex-none" />}
-                                          <span className="truncate">{ev.title}</span>
-                                        </span>
-                                      ))}
-                                    </div>
+                                  {(rec.evidence && rec.evidence.length > 0) ? (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setExpandedRecId((prev) => (prev === rec.id ? null : rec.id));
+                                      }}
+                                      className="mt-1.5 text-[11px] text-gray-400 hover:text-gray-600 transition-colors"
+                                    >
+                                      {expandedRecId === rec.id ? '收起依据' : '查看依据'}
+                                    </button>
+                                  ) : null}
+                                  {expandedRecId === rec.id && (
+                                    <>
+                                      {rec.reason ? (
+                                        <p className="text-xs text-gray-500 mt-1 leading-relaxed">{rec.reason}</p>
+                                      ) : null}
+                                      {rec.evidence && rec.evidence.length > 0 && (
+                                        <div className="flex flex-wrap gap-1 mt-1.5">
+                                          {rec.evidence.map((ev) => (
+                                            <span
+                                              key={`${ev.type}-${ev.id}`}
+                                              className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-50 border border-gray-100 text-[11px] text-gray-500 max-w-full"
+                                              style={{ borderRadius: 6 }}
+                                            >
+                                              {ev.type === 'node'
+                                                ? <Tag className="w-2.5 h-2.5 flex-none" />
+                                                : <span className="w-1.5 h-1.5 rounded-full bg-gray-300 flex-none" />}
+                                              <span className="truncate">{ev.title}</span>
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
                                   )}
                                 </div>
                                 <button
@@ -359,7 +378,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                             <span className="text-sm font-medium text-gray-800">{n.name}</span>
                             <span className="text-[11px] text-gray-400">{n.kind}</span>
                           </div>
-                          <p className="text-xs text-gray-500 mt-0.5">{n.reason}</p>
+                          {summaryDetailExpanded && <p className="text-xs text-gray-500 mt-0.5">{n.reason}</p>}
                         </div>
                       </div>
                     ))}
@@ -368,7 +387,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
               )}
 
               {/* Highlights（原文摘录） */}
-              {summary.highlights.length > 0 && (
+              {summaryDetailExpanded && summary.highlights.length > 0 && (
                 <div className="bg-card border border-gray-100 overflow-hidden rounded-xl shadow-card">
                   <h4 className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b border-gray-100">
                     代表性摘录

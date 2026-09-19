@@ -826,15 +826,21 @@ async function callChatCompletion(
   model: string,
   content: string,
 ) {
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
+  // 叙事 LLM 超时（2026-09 修复）：原先无超时，QPM 饱和时 30d 总结会挂 5-10 分钟。
+  // 单次 55s（与 extract.ts 一致，实测 MiniMax-M2.5 约 50s）；超时/失败由调用方降级到确定性骨架。
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 55_000);
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
         {
           role: 'system',
           content: `你是知识管理教练。根据用户近期数据，生成深度结构化总结。只返回 JSON，不要 Markdown。
@@ -856,12 +862,16 @@ JSON 格式（每字段最多 5 项）：
 - nextActions 要具体可执行（如"本周尝试记录每次加班后的睡眠时长，检验你怀疑的因果关系"），不要空话（如"继续努力"）
 - 【重要】忽略以下无意义内容：日常琐碎（吃饭、睡觉、通勤）、具体时刻（22点、00:40）、泛化概念（计划、工作、学习、生活）、泛称地点（家、公司、食堂）。这些不会产生有价值的洞察
 - importantNodes 只选对用户有实质意义的节点（如具体项目名、方法论、工具、人名、关键结论），不要选日常生活类节点
-- 如果数据中只有琐碎节点，importantNodes 可以少于 5 个，宁缺毋滥`,
+          - 如果数据中只有琐碎节点，importantNodes 可以少于 5 个，宁缺毋滥`,
         },
         { role: 'user', content },
       ],
     }),
-  });
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   const text = await resp.text();
   const json = safeJsonParse(text);
@@ -989,7 +999,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 尝试 LLM
     const apiKey = resolveApiKey(req);
     const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
-    const preferredModel = process.env.MINIMAX_MODEL || 'abab6.5s-chat';
+    const preferredModel = process.env.MINIMAX_MODEL || 'MiniMax-M2.5';
 
     // P2 社区检测：把周期内图谱切成主题簇，供社区摘要与叙事使用
     const communities = detectCommunities(agg.graphNodes, agg.graphLinks, {
@@ -1024,7 +1034,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       preferredModel,
       'MiniMax-M2.5',
       'MiniMax-M2.1',
-      'abab6.5s-chat',
     ].filter(Boolean);
 
     const urlsToTry = [

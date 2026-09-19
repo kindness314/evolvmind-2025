@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, Pin, Trash2, FileText, Image as ImageIcon, Mic, File, Sparkles, Loader2, AlertTriangle, Pencil, Save, X, Check } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { toast } from 'sonner';
 import { supabase } from '../../lib/supabase';
 import { retryCapturedItem } from '../../lib/process';
 
@@ -124,7 +125,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
       await retryCapturedItem(item.id);
     } catch (e: unknown) {
       console.error('处理失败:', e);
-      alert('处理失败，请稍后再试');
+      toast.error('处理失败，请稍后再试');
     }
     await fetchItemDetail();
   };
@@ -133,7 +134,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
     if (!item || isSavingEdit) return;
     const nextTitle = draftTitle.trim();
     if (!nextTitle) {
-      alert('标题不能为空');
+      toast.error('标题不能为空');
       return;
     }
     setIsSavingEdit(true);
@@ -149,7 +150,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
       onUpdate?.();
     } catch (error) {
       console.error('保存编辑失败:', error);
-      alert('保存失败，请稍后重试');
+      toast.error('保存失败，请稍后重试');
     } finally {
       setIsSavingEdit(false);
     }
@@ -200,7 +201,7 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
       onBack();
     } catch (error) {
       console.error('删除失败:', error);
-      alert('删除失败，请稍后重试');
+      toast.error('删除失败，请稍后重试');
       setIsDeleting(false);
     }
   };

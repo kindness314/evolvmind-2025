@@ -234,12 +234,12 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
     if (selectedFile.size > MAX_FILE_SIZE) {
-      alert('文件大小不能超过 10MB');
+      toast.error('文件大小不能超过 10MB');
       e.target.value = '';
       return;
     }
     if (!isSupportedFile(selectedFile, mode)) {
-      alert('不支持的文件类型');
+      toast.error('不支持的文件类型');
       e.target.value = '';
       return;
     }
@@ -264,7 +264,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
   // O1: 标题/关键词/摘要提取已改为保存时自动执行(见 handleSave -> analyzeAndPersist), 不再手动触发
   const handleSave = async () => {
     if (file && (file.size > MAX_FILE_SIZE || !isSupportedFile(file, mode))) {
-      alert('文件无效：大小必须不超过 10MB，且类型必须受支持');
+      toast.error('文件无效：大小必须不超过 10MB，且类型必须受支持');
       return;
     }
     if (!mode) return;
@@ -423,7 +423,7 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
       }, 4000);
     } catch (error) {
       console.error('保存失败:', error);
-      alert('保存失败，请稍后重试');
+      toast.error('保存失败，请稍后重试');
     } finally {
       setIsSaving(false);
     }

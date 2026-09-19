@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EvolvMind 知识网络下钻形态 Demo（方案对比）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f2f3f5; color: #1c1c1e; padding: 24px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { font-size: 13px; color: #8e8e93; margin-bottom: 24px; }
+  .plan { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  @media (max-width: 900px){ .plan { grid-template-columns: 1fr; } }
+  .card { background: #fff; border: 1px solid #e5e5ea; border-radius: 18px; overflow: hidden; }
+  .card-h { padding: 14px 16px; border-bottom: 1px solid #f0f0f2; }
+  .card-h .tag { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:8px; margin-bottom:6px; }
+  .card-h h2 { font-size: 16px; }
+  .card-h p { font-size: 12px; color: #8e8e93; margin-top: 3px; line-height:1.5; }
+  .phone { width: 100%; background: #fff; min-height: 560px; }
+  /* 状态栏 */
+  .status { display:flex; justify-content:space-between; align-items:center; padding: 8px 16px; font-size: 11px; color:#8e8e93; }
+  /* 模拟页面内容 */
+  .page { padding: 8px 14px; }
+  .crumbs { display:flex; align-items:center; gap:6px; font-size:12px; color:#8e8e93; margin: 6px 0 12px; }
+  .crumbs b { color:#1c1c1e; font-weight:600; }
+  /* 方案A：内容卡片流 */
+  .a-stat { display:flex; gap:8px; margin-bottom:12px; }
+  .a-stat .s { flex:1; background:#fff; border:1px solid #e5e5ea; border-radius:12px; padding:10px 8px; text-align:center; }
+  .a-stat .n { font-size:18px; font-weight:700; color:#0a84ff; }
+  .a-stat .l { font-size:11px; color:#8e8e93; }
+  .a-card { background:#fff; border:1px solid #e5e5ea; border-radius:14px; padding:12px; margin-bottom:10px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .a-tags { display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
+  .a-tag { font-size:10px; padding:2px 8px; border-radius:6px; }
+  .a-card h3 { font-size:14px; font-weight:600; margin-bottom:4px; }
+  .a-card .sum { font-size:12px; color:#6e6e73; line-height:1.5; }
+  .a-card .meta { font-size:10px; color:#aeaeb2; margin-top:6px; }
+  /* 方案B：图谱+摘要 */
+  .b-canvas { position:relative; height:300px; background:#f8f9fb; border-radius:14px; overflow:hidden; }
+  .b-node { position:absolute; width:56px; height:56px; background:#0a84ff; color:#fff; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; text-align:center; clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%); }
+  .b-node.red{background:#e0343c;} .b-node.green{background:#25a55c;} .b-node.teal{background:#0e9e8a;}
+  .b-line { position:absolute; background:#c7ccd4; height:1px; transform-origin:0 50%; }
+  .b-pop { position:absolute; background:#fff; border:1px solid #e5e5ea; border-radius:10px; padding:8px; width:150px; box-shadow:0 4px 14px rgba(0,0,0,.08); font-size:11px; }
+  .b-pop h4{font-size:12px; margin-bottom:3px;} .b-pop p{color:#6e6e73; line-height:1.45; font-size:10px;}
+  /* 方案C：主题解读卡 */
+  .c-hero { background:linear-gradient(135deg,#eaf3ff,#f0f9ff); border-radius:14px; padding:16px; margin-bottom:12px; border:1px solid #d3e6ff; }
+  .c-hero h3{font-size:18px; color:#0a84ff; margin-bottom:6px;}
+  .c-hero p{font-size:12px; color:#1c1c1e; line-height:1.6;}
+  .c-metrics { display:flex; gap:8px; margin-bottom:12px; }
+  .c-metric{ flex:1; background:#fff; border:1px solid #e5e5ea; border-radius:12px; padding:10px 8px; text-align:center; }
+  .c-metric .k{font-size:10px; color:#8e8e93;} .c-metric .v{font-size:18px; font-weight:700;}
+  .c-trend{background:#fff; border:1px solid #e5e5ea; border-radius:14px; padding:12px; margin-bottom:12px; font-size:12px; color:#6e6e73;}
+  .c-trend li{list-style:none; display:flex; gap:8px; align-items:flex-start; margin-bottom:8px; line-height:1.5;}
+  .c-act{background:#fff; border:1px solid #0a84ff; border-radius:14px; padding:12px; font-size:12px; color:#0a63c4;}
+  .c-act li{list-style:none; display:flex; gap:8px; margin-bottom:8px; line-height:1.5;}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none;margin-top:4px;}
+  .arrow{color:#0a84ff;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>知识网络下钻形态 · 方案对比 Demo</h1>
+  <p class="sub">目标：让用户点进一个主题后，能"理解自己有哪些内容 + 获得下一步指导"，而不是只看到一堆名词节点。</p>
+
+  <div class="plan">
+
+    <!-- 方案 A：内容卡片流 -->
+    <div class="card">
+      <div class="card-h">
+        <span class="tag" style="background:#eaf3ff;color:#0a84ff">方案 A</span>
+        <h2>内容卡片流</h2>
+        <p>点主题 → 该主题下内容卡片（标题+摘要+主题+时间），可点进详情。最直观回忆"我记录了这些"。</p>
+      </div>
+      <div class="phone">
+        <div class="status"><span>9:41</span><span>EvolvMind</span></div>
+        <div class="page">
+          <div class="crumbs">总览 <span class="arrow">›</span> <b>学习</b></div>
+          <div class="a-stat">
+            <div class="s"><div class="n">33</div><div class="l">学习内容</div></div>
+            <div class="s"><div class="n">2</div><div class="l">本周新增</div></div>
+            <div class="s"><div class="n">↑</div><div class="l">趋势上升</div></div>
+          </div>
+          <div class="a-card">
+            <div class="a-tags"><span class="a-tag" style="background:#eaf3ff;color:#0a84ff">学习方法</span><span class="a-tag" style="background:#f1f1f4;color:#6e6e73">专注力</span></div>
+            <h3>番茄工作法实践记录</h3>
+            <p class="sum">把工作时间切成 25 分钟专注 + 5 分钟休息，记录执行效果。发现下午 3 点效率下降，尝试调整...</p>
+            <div class="meta">昨天 · 3 个相关节点</div>
+          </div>
+          <div class="a-card">
+            <div class="a-tags"><span class="a-tag" style="background:#eaf3ff;color:#0a84ff">笔记与整理</span></div>
+            <h3>如何用康奈尔笔记法</h3>
+            <p class="sum">页面分三栏：主笔记区 / 线索区 / 总结区。适合复习时先看线索回忆，再对照...</p>
+            <div class="meta">2 天前 · 2 个相关节点</div>
+          </div>
+          <div class="a-card">
+            <div class="a-tags"><span class="a-tag" style="background:#eaf3ff;color:#0a84ff">学习方法</span></div>
+            <h3>费曼学习法：讲给别人听</h3>
+            <p class="sum">用"能否讲清楚"来检验是否真懂。把概念简化成小学生能懂的话...</p>
+            <div class="meta">3 天前 · 4 个相关节点</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 方案 B：图谱 + 内容摘要 -->
+    <div class="card">
+      <div class="card-h">
+        <span class="tag" style="background:#f3e8ff;color:#a34fe0">方案 B</span>
+        <h2>图谱 + 内容摘要</h2>
+        <p>保留图谱六边形节点，节点旁/点击显示该主题的代表性内容摘要，兼顾图谱美感 + 内容线索。</p>
+      </div>
+      <div class="phone">
+        <div class="status"><span>9:41</span><span>EvolvMind</span></div>
+        <div class="page">
+          <div class="crumbs">总览 <span class="arrow">›</span> <b>学习</b></div>
+          <div class="b-canvas">
+            <div class="b-line" style="left:120px;top:150px;width:110px;transform:rotate(-30deg)"></div>
+            <div class="b-line" style="left:120px;top:150px;width:110px;transform:rotate(20deg)"></div>
+            <div class="b-line" style="left:220px;top:150px;width:100px;transform:rotate(-15deg)"></div>
+            <div class="b-node" style="left:120px;top:122px;">学习<br>方法</div>
+            <div class="b-node red" style="left:240px;top:60px;">阅读<br>论文</div>
+            <div class="b-node green" style="left:250px;top:210px;">笔记<br>整理</div>
+            <div class="b-pop" style="left:150px;top:196px;">
+              <h4>番茄工作法实践记录</h4>
+              <p>25 分钟专注 + 5 分钟休息，下午 3 点效率下降...</p>
+            </div>
+          </div>
+          <div class="a-card" style="margin-top:12px;">
+            <div class="a-tags"><span class="a-tag" style="background:#eaf3ff;color:#0a84ff">学习方法</span></div>
+            <h3>费曼学习法：讲给别人听</h3>
+            <p class="sum">用"能否讲清楚"来检验是否真懂。把概念简化成小学生能懂的话...</p>
+            <div class="meta">3 天前 · 4 个相关节点</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 方案 C：主题解读卡 -->
+    <div class="card">
+      <div class="card-h">
+        <span class="tag" style="background:#e8f8ee;color:#1a9b4a">方案 C</span>
+        <h2>主题解读卡</h2>
+        <p>点主题 → 一屏"内容概览 + 趋势 + 行动建议"，直接告诉用户这个主题意味着什么、下一步做什么。</p>
+      </div>
+      <div class="phone">
+        <div class="status"><span>9:41</span><span>EvolvMind</span></div>
+        <div class="page">
+          <div class="crumbs">总览 <span class="arrow">›</span> <b>学习</b></div>
+          <div class="c-hero">
+            <h3>学习方法</h3>
+            <p>这是你记录最多的主题（33 条）。最近你特别关注"专注力"和"时间管理"，想把学习方法落地成可执行的日常习惯。</p>
+          </div>
+          <div class="c-metrics">
+            <div class="c-metric"><div class="k">内容数</div><div class="v">33</div></div>
+            <div class="c-metric"><div class="k">本周新增</div><div class="v">+2</div></div>
+            <div class="c-metric"><div class="k">关联主题</div><div class="v">工作</div></div>
+          </div>
+          <div class="c-trend">
+            <div style="font-weight:600;color:#1c1c1e;margin-bottom:8px;">变化趋势</div>
+            <ul>
+              <li><span class="dot" style="background:#1a9b4a"></span> 专注力 · 上升（本周新增 1 条）</li>
+              <li><span class="dot" style="background:#e3a008"></span> 时间管理 · 稳定</li>
+              <li><span class="dot" style="background:#8e8e93"></span> 阅读与论文 · 无新增</li>
+            </ul>
+          </div>
+          <div class="c-act">
+            <div style="font-weight:600;margin-bottom:8px;color:#0a84ff;">建议行动</div>
+            <ul>
+              <li><span class="dot" style="background:#0a84ff"></span> 把"专注力"相关记录整理成一份习惯清单</li>
+              <li><span class="dot" style="background:#0a84ff"></span> "阅读与论文"已有 2 周未新增，可回顾或补充</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

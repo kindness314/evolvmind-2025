@@ -1,6 +1,12 @@
 # Knowledge Graph — Focus & Zoom: Pending Fixes
 
 Created: 2026-07-13
+> ⚠️ **状态：本文档四个缺陷已于 2026-08 全部修复，仅留档参考。**
+> - 缺陷1（线性 fitScale 不感知邻域）：✅ 已修 (2026-08-14，log2 非线性缩放 `Math.log2(fitScale+1)*0.85+1.0`)
+> - 缺陷2（详情面板打开后节点被裁切）/ 缺陷3（分类视图长标签溢出）/ 缺陷4（移动端缩放感不一致）：✅ 已修 (2026-08-18，O6 可用视口 + 纯数学变换 + 懒加载)。详见 `EvolvMind/.serena/memories/2026-08-18-o6-graph-viewport-lazyload.md`。
+> - 剩余 O6 可选项：侧边面板折叠、滚轮缩放自动下钻（见 `IMPROVEMENT.md`）。
+> - 下方"Root Problem/Defects"为历史记录，不再作为待修项。
+
 Source: `src/app/components/KnowledgePage.tsx` — `positionGraphViewport()` and related hooks.
 
 ## Current State (v4, 2026-07-13)

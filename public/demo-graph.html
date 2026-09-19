@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EvolvMind 图谱价值版 Demo（可读懂的认知地图）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f2f3f5; color: #1c1c1e; padding: 24px; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { font-size: 13px; color: #8e8e93; margin-bottom: 20px; line-height:1.6; }
+  .top { display:grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+  @media(max-width:900px){ .top{grid-template-columns:1fr;} }
+  .panel { background:#fff; border:1px solid #e5e5ea; border-radius:18px; padding:18px; }
+  .canvas { position:relative; height:420px; background:#f8f9fb; border-radius:14px; overflow:hidden; }
+  .line { position:absolute; background:#c7ccd4; height:2px; transform-origin:0 50%; }
+  .line.hot { background:#0a84ff; height:3px; }
+  .node { position:absolute; color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; font-weight:700; text-align:center; clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%); box-shadow:0 2px 6px rgba(0,0,0,.12); }
+  .node .cnt { font-size:10px; font-weight:400; opacity:.9; }
+  .node.super { font-size:14px; }
+  .node.soft { font-size:11px; }
+  .node b { font-weight:700; }
+  .newflag { position:absolute; font-size:9px; padding:1px 5px; border-radius:6px; background:#e8f8ee; color:#1a9b4a; font-weight:600; }
+  .hotflag { position:absolute; font-size:9px; padding:1px 5px; border-radius:6px; background:#eaf3ff; color:#0a84ff; font-weight:600; }
+  .insight { box-shadow:0 4px 16px rgba(0,0,0,.14); }
+  /* 右侧洞察面板 */
+  .side { display:flex; flex-direction:column; gap:14px; }
+  .side-title { font-size:13px; font-weight:700; color:#1c1c1e; margin-bottom:10px; }
+  .ins { background:#f8f9fb; border:1px solid #ececf0; border-radius:12px; padding:12px; font-size:13px; line-height:1.5; }
+  .ins .tag { display:inline-block; font-size:10px; font-weight:700; padding:2px 8px; border-radius:6px; margin-bottom:5px; }
+  .ins h4 { font-size:13px; color:#1c1c1e; margin:2px 0 4px; }
+  .ins ul { font-size:12px; color:#6e6e73; padding-left:16px; }
+  .ins li { margin-bottom:4px; }
+  .kpi { display:flex; gap:8px; }
+  .kpi .k { flex:1; background:#fff; border:1px solid #e5e5ea; border-radius:12px; padding:10px 8px; text-align:center; }
+  .kpi .v { font-size:17px; font-weight:700; }
+  .kpi .lb { font-size:10px; color:#8e8e93; }
+  .hint { font-size:12px; color:#8e8e93; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>图谱价值版 · 可读懂的认知地图</h1>
+  <p class="sub">图谱不是"名词堆"，而是让用户一眼看懂：<b>我的体系怎么组织、核心在哪、最近在变化什么、以及下一步能做什么</b>。下图模拟"点进『学习』主题后"的图谱。</p>
+
+  <div class="top">
+    <!-- 图谱区 -->
+    <div class="panel">
+      <div class="canvas">
+        <!-- 连线 -->
+        <div class="line hot" style="left:180px;top:210px;width:120px;transform:rotate(-28deg)"></div>
+        <div class="line" style="left:180px;top:210px;width:130px;transform:rotate(30deg)"></div>
+        <div class="line" style="left:300px;top:210px;width:110px;transform:rotate(-12deg)"></div>
+        <div class="line" style="left:300px;top:210px;width:100px;transform:rotate(22deg)"></div>
+        <div class="line" style="left:180px;top:210px;width:130px;transform:rotate(5deg)"></div>
+
+        <!-- 核心大节点 -->
+        <div class="node super" style="left:272px;top:174px;width:66px;height:66px;background:#0a84ff;">
+          学习方法 <span class="cnt">33 条</span>
+        </div>
+        <div class="node super" style="left:168px;top:92px;width:58px;height:58px;background:#e0343c;">
+          阅读<br>论文 <span class="cnt">8</span>
+        </div>
+        <div class="node super" style="left:405px;top:90px;width:58px;height:58px;background:#0e9e8a;">
+          教育<br>课程 <span class="cnt">8</span>
+        </div>
+        <div class="node super" style="left:395px;top:250px;width:58px;height:58px;background:#25a55c;">
+          笔记<br>整理 <span class="cnt">10</span>
+        </div>
+        <div class="node super" style="left:165px;top:258px;width:58px;height:58px;background:#e3a008;">
+          复习<br>记忆 <span class="cnt">3</span>
+        </div>
+        <div class="node super" style="left:275px;top:290px;width:58px;height:58px;background:#8e44ad;">
+          知识<br>管理 <span class="cnt">19</span>
+        </div>
+
+        <!-- 变化标注 -->
+        <div class="newflag" style="left:318px;top:148px;">本周 +2</div>
+        <div class="hotflag" style="left:160px;top:214px;">关联「工作」</div>
+
+        <!-- 内容摘要气泡（点核心节点） -->
+        <div class="insight" style="position:absolute;left:238px;top:296px;width:200px;background:#fff;border:1px solid #e5e5ea;border-radius:12px;padding:10px;font-size:11px;">
+          <b style="font-size:12px;">番茄工作法实践记录</b><br>
+          <span style="color:#6e6e73;display:block;line-height:1.5;margin-top:3px;">25 分钟专注 + 5 分钟休息，下午 3 点效率下降，已调整...</span>
+          <span style="color:#aeaeb2;font-size:10px;display:block;margin-top:4px;">点击查看原文 · 3 个相关节点</span>
+        </div>
+      </div>
+      <div class="hint">💡 点任何节点 → 可看该内容的原文/摘要；hover 连线 → 显示"为什么相关"（同主题 / 同来源 / 语义关联）。</div>
+    </div>
+
+    <!-- 洞察面板 -->
+    <div class="side">
+      <div class="panel">
+        <div class="side-title">这个主题在讲什么</div>
+        <div class="ins" style="background:#eaf3ff;border-color:#d3e6ff;">
+          <span class="tag" style="background:#0a84ff;color:#fff;">主题解读</span>
+          <h4>学习方法</h4>
+          这是你记录最多的主题（33 条）。最近你特别关注<b>专注力</b>和<b>时间管理</b>，想把这些方法落地成日常习惯。你最常用的切入点是「番茄工作法」。
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="kpi">
+          <div class="k"><div class="v" style="color:#0a84ff;">33</div><div class="lb">内容数</div></div>
+          <div class="k"><div class="v" style="color:#1a9b4a;">+2</div><div class="lb">本周新增</div></div>
+          <div class="k"><div class="v">3</div><div class="lb">关联主题</div></div>
+          <div class="k"><div class="v" style="color:#e0343c;">↑</div><div class="lb">趋势上升</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="side-title">值得你注意的变化</div>
+        <div class="ins">
+          <span class="tag" style="background:#e8f8ee;color:#1a9b4a;">扩张中</span>
+          <h4>专注力 · 本周新增 1 条</h4>
+          <ul><li>你很在意「如何在上午高效专注」</li><li>可把相关记录整理成一份习惯清单</li></ul>
+        </div>
+        <div class="ins" style="margin-top:10px;">
+          <span class="tag" style="background:#f3f1f1;color:#6e6e73;">待回顾</span>
+          <h4>阅读与论文 · 2 周无新增</h4>
+          <ul><li>可能已告一段落，或值得补充新想法</li></ul>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="side-title">下一步建议</div>
+        <div class="ins" style="border-color:#0a84ff;">
+          <span class="tag" style="background:#0a84ff;color:#fff;">行动</span>
+          <ul>
+            <li>「学习方法×工作」关联很强 —— 可尝试把学习方法应用到实际工作</li>
+            <li>「专注力」在扩张 —— 建议整理成可复用的晨间/工作时间块</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

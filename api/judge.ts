@@ -200,8 +200,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
-    const preferredModel = process.env.MINIMAX_MODEL || 'abab6.5s-chat';
-    const candidates = [preferredModel, 'MiniMax-M2.5', 'MiniMax-M2.1', 'abab6.5s-chat'].filter(Boolean);
+    const preferredModel = process.env.MINIMAX_MODEL || 'MiniMax-M2.5';
+    const candidates = [preferredModel, 'MiniMax-M2.5', 'MiniMax-M2.1'].filter(Boolean);
     const base = baseUrl.replace(/\/$/, '');
     const urlsToTry = [
       `${base}/chat/completions`,

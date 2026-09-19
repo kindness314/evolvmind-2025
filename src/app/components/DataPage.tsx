@@ -569,7 +569,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
       exitMultiSelect();
     } catch (error) {
       console.error('批量置顶失败:', error);
-      alert('批量置顶失败，请稍后重试');
+      toast.error('批量置顶失败，请稍后重试');
     } finally {
       setIsBulkActing(false);
     }
@@ -602,7 +602,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
       exitMultiSelect();
     } catch (error) {
       console.error('批量删除失败:', error);
-      alert('批量删除失败，请稍后重试');
+      toast.error('批量删除失败，请稍后重试');
     } finally {
       setIsBulkActing(false);
     }

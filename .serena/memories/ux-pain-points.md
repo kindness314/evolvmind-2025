@@ -1,7 +1,7 @@
 # EvolvMind 问题与优化方案总览
 
 > 合并两个视角：技术实现层面（项目记忆/计划文件提取）+ 用户感知层面（体验链路分析）。
-> 当前基线：Stage 1 已归档；真实 A/B 隔离验收已通过（13/13 PASS, 2026-07-25）；优化方向 O1-O7 中 O2 已完成，其余待执行。
+> 当前基线：Stage 1 已归档；真实 A/B 隔离验收已通过（13/13 PASS, 2026-07-25）；优化方向 O1-O7 **全部完成**。
 
 ---
 
@@ -11,14 +11,18 @@
 Stage 1 P1-P5 Demo 界面验收     ✅ 已归档
 07-13-user-scope-upload-security ✅ 已关闭 (Email OTP A/B 13/13 PASS, 2026-07-25)
 07-13-app-deployment             ✅ 生产已部署 (2026-07-25)
-O1 捕获处理状态                  ✅ 已完成 (migration `20260806000000` 已应用正式库, 2026-08-06)
+O1 捕获处理状态                  ✅ 已完成 (migration `20260806000000`, 2026-08-06)
 O2 搜索结果补查                  ✅ 已实现 (sourcePreviews 已恢复)
-O3 signed URL 生命周期           ⬜ 待执行
-O4 Settings 真实化               ⬜ 待执行 (假模型下拉仍在)
-O5 ProcessPage                   ⬜ 待执行 (静态页仍在)
-O6 图谱聚焦缩放 + 懒加载         ⬜ 待执行 (PENDING 四缺陷未修)
-O7 自动化测试                    ⬜ 待执行
+O3 signed URL 生命周期           ✅ 已完成 (2026-08-18)
+O4 Settings 真实化               ✅ 已完成 (2026-08-18)
+O5 ProcessPage                   ✅ 已完成 (2026-08-18, 删除静态页)
+O6 图谱聚焦缩放 + 懒加载         ✅ 已完成 (2026-08-18; 仅剩滚轮缩放联动可选项)
+O7 自动化测试                    ✅ 已完成 (2026-08-18, Vitest 32 用例)
+体验优化路线图 P0-P7             ✅ 已完成 (2026-08-14, 评估 98%/叙事 8.8/CLUENER 84%)
+图谱三层/语义主题分层            ✅ 语义两层粒度 (2026-08-19, 总览12宽主题→细主题→成员)
 ```
+
+> 权威最新状态以根目录 `IMPROVEMENT.md` 与 `mem:roadmap/dual-track-next-steps` 为准；本文件只保留痛点→方案映射。
 
 ### 阻断链（主线已解除）
 
@@ -157,12 +161,12 @@ Twilio Trial → 中国短信 BLOCKED（手机号方向，保持独立，与 Ema
 |------|------|----------|----------|
 | O0 | 建立基线（typecheck + build + Trellis 子任务） | — | — |
 | O1 | 捕获处理状态 ✅ | **P1** 即时反馈, P7 近期总结 | `CapturePage`, `HomePage`, `ItemDetailPage`, `api/embed.ts`, `api/graph/embed.ts`, migration `20260806000000_add_processing_status.sql` |
-| O2 | 搜索结果补查 | **P5** 搜索解释 | `api/search.ts`, `api/graph/search.ts` |
-| O3 | 文件生命周期 (signed URL) | P3 多模态 | `CapturePage`, `ItemDetailPage`, migration |
-| O4 | Settings 真实化 | **P11** 隐私说明 | `SettingsPage.tsx` |
-| O5 | ProcessPage 处理 | **P7** 近期总结 | `ProcessPage.tsx` — 推荐删除 |
-| O6 | 图谱聚焦缩放 + 性能 | **P4** 图谱可读性 | `KnowledgePage.tsx`, `App.tsx` |
-| O7 | 自动化测试 | 全部 | 新增测试 |
+| O2 | 搜索结果补查 ✅ | **P5** 搜索解释 | `api/search.ts`, `api/graph/search.ts` |
+| O3 | 文件生命周期 (signed URL) ✅ | P3 多模态 | `CapturePage`, `ItemDetailPage`, migration `20260818000000_add_storage_metadata.sql` |
+| O4 | Settings 真实化 ✅ | **P11** 隐私说明 | `SettingsPage.tsx` |
+| O5 | ProcessPage 处理 ✅（已删除静态页） | **P7** 近期总结 | `ProcessPage.tsx` — 已删除 |
+| O6 | 图谱聚焦缩放 + 性能 ✅ | **P4** 图谱可读性 | `KnowledgePage.tsx`, `App.tsx` |
+| O7 | 自动化测试 ✅ | 全部 | `tests/` Vitest 32 用例 |
 
 ### 验收方向（已完成）
 
@@ -176,17 +180,17 @@ Email OTP 路径 A0-A6 已全部通过（13/13 PASS，2026-07-25，提交 `2fa3a
 
 ---
 
-## 五、已知技术缺陷
+## 五、已知技术缺陷（已随 O6/O7 基本修复，仅列仍存留项）
 
 | 问题 | 位置 | 严重度 |
 |------|------|--------|
-| 图谱线性 fitScale 不感知邻域大小 | `KnowledgePage.tsx` ~545-556 | 中 |
-| 详情面板打开后节点被裁切 | `KnowledgePage.tsx` | 中 |
-| 分类视图长标签溢出 | `KnowledgePage.tsx` zoomToFit | 低 |
-| 移动端缩放感不一致 | `KnowledgePage.tsx` | 低 |
-| P4.3 空推荐 Demo 下 NOT VERIFIED | — | 低 |
-| 聊天模型候选列表含被拒绝的旧模型名 | `api/extract.ts`, `api/summarize.ts` | 低 |
-| Settings 显示假模型下拉选项 | `SettingsPage.tsx` | 低 |
+| ~~图谱线性 fitScale 不感知邻域大小~~ | `KnowledgePage.tsx` | ✅ 已修 (log2 非线性, 2026-08-14) |
+| ~~详情面板打开后节点被裁切~~ | `KnowledgePage.tsx` | ✅ 已修 (2026-08-18, 可用视口) |
+| ~~分类视图长标签溢出~~ | `KnowledgePage.tsx` | ✅ 已修 (话题标签画在节点内) |
+| ~~移动端缩放感不一致~~ | `KnowledgePage.tsx` | ✅ 已修 (2026-08-18) |
+| ~~Settings 假模型下拉~~ | `SettingsPage.tsx` | ✅ 已修 (O4, 2026-08-18) |
+| 侧边面板遮挡画布左 46% 下方节点不可点击 | `KnowledgePage.tsx` | 低（未做面板折叠） |
+| 滚轮缩放自动下钻/回总览 | `KnowledgePage.tsx` | 低（可选，未做） |
 | 部分页面用 `alert()` 而非 Sonner toast | 多处 | 低 |
 
 ---
@@ -195,31 +199,30 @@ Email OTP 路径 A0-A6 已全部通过（13/13 PASS，2026-07-25，提交 `2fa3a
 
 | 项目 | 描述 |
 |------|------|
-| ~840KB JS chunk | force-graph 库未动态 import，影响首屏 |
-| 无自动化测试 | 无单元/E2E 测试，依赖人工验收 |
+| ~~~840KB JS chunk（force-graph 未动态 import）~~~ | ✅ 已修 (O6 懒加载, 2026-08-18；主 chunk ~682KB + KnowledgePage 227KB 独立) |
+| ~~无自动化测试~~ | ✅ 已补 (O7, Vitest 32 用例, 2026-08-18) |
 | 大页面组件 | `KnowledgePage.tsx` 等内联大量业务逻辑 |
 | Supabase Realtime | 设计意图但未实现 |
-| 推荐数据为空 | 自然 Demo 推荐数据始终为空 |
+| Git 落后：本地 main 领先 origin 17 提交未 push + 08-14 后改动未 commit | tip `2e2cb77`(08-14)；origin 停 `a2b4864`(07-27)；08-16~08-19 的 community.ts/topicLayout.ts/topicize.ts/tests/ 等仍 untracked+modified，等用户要求推 origin+vercel |
 
----
+## 七、统一优先级建议（O1-O7 + P0-P7 已全部完成，改为"下一步方向"）
 
-## 七、统一优先级建议
-
-| 优先级 | 做什么 | 属于 | 为什么先做 |
-|--------|--------|------|------------|
-| ~~**1**~~ | ~~O1 捕获处理状态~~ | 优化 | ✅ 已完成 (migration + 三状态链路, 2026-08-06) |
-| **2** | O6 图谱聚焦缩放 + 可读性 | 优化 | 图谱是核心差异功能，必须让用户看得懂、用得上 |
-| **3** | ~~O2 搜索结果补查 + 解释~~ | 优化 | ✅ 已完成 (sourcePreviews 已恢复) |
-| **4** | O5 近期总结 | 优化 | 留存核心——用户回来的理由 |
-| **5** | 主动推荐卡片 | 新增 | 首页智能建议，不推送通知 |
-| **6** | 时间演化实用版 | 新增 | 先做筛选/高亮，后做动画 |
-| **7** | ~~Brevo SMTP → A/B 验收~~ | 验收 | ✅ 已完成 (Email OTP A/B 13/13 PASS) |
-| **8** | O4 Settings 真实化 + 隐私说明 | 优化 | 真实用户需要知道数据如何被处理 |
-| **9** | O3 signed URL 生命周期 | 优化 | 文件不因 URL 过期而不可访问 |
-| **10** | 冷启动方案 | 新增 | Demo 样例空间 + 批量导入 + 即时洞察 |
-| **11** | 多模态解析 (OCR/ASR) | 新增 | 上传不只是存元数据 |
-| **12** | PWA + 移动端优化 | TODO#4 | 可分发、可添加到主屏幕 |
-| **13** | O7 自动化测试 | 优化 | 收口，防止回归 |
+| 优先级 | 做什么 | 属于 | 说明 |
+|--------|--------|------|------|
+| ~~1~~ | ~~O1 捕获处理状态~~ | ✅ 已完成 | 2026-08-06 |
+| ~~2~~ | ~~O6 图谱聚焦缩放~~ | ✅ 已完成 | 2026-08-18 |
+| ~~3~~ | ~~O2 搜索结果补查~~ | ✅ 已完成 | sourcePreviews |
+| ~~4~~ | ~~O5 近期总结~~ | ✅ 已完成 | 2026-08-18 删静态页 |
+| ~~5~~ | ~~主动推荐卡片~~ | ✅ 已完成 | P4/P5 落地 |
+| ~~6~~ | ~~时间演化实用版~~ | ✅ 已完成 | P5 落地 |
+| ~~7~~ | ~~Email OTP A/B 验收~~ | ✅ 已完成 | 13/13 PASS |
+| ~~8~~ | ~~O4 Settings 真实化~~ | ✅ 已完成 | 2026-08-18 |
+| ~~9~~ | ~~O3 signed URL 生命周期~~ | ✅ 已完成 | 2026-08-18 |
+| 10 | 冷启动方案 | 发布待办 #7 | Demo 样例空间 + 批量导入 + 即时洞察 |
+| 11 | 多模态解析 (OCR/ASR) | 发布待办 #1 | 上传不只是存元数据 |
+| 12 | PWA + 移动端优化 | 发布待办 #2/#6 | 可分发、可添加到主屏幕 |
+| 13 | 推送 + 监控 | 发布待办 #4/#5 | 复习提醒 + Sentry |
+| 14 | 原生壳打包 | 发布待办 #3 | Capacitor → App Store/Android |
 
 ---
 

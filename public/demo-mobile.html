@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EvolvMind 手机端 · 话题状况抽屉 Demo</title>
+<style>
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:#e5e5ea; color:#1c1c1e; display:flex; justify-content:center; align-items:center; min-height:100vh; padding:16px; }
+  .phone { width:390px; height:844px; background:#fff; border-radius:36px; overflow:hidden; position:relative; box-shadow:0 20px 60px rgba(0,0,0,.25); }
+  .phone .notch { position:absolute; top:0; left:0; right:0; height:28px; background:#fff; z-index:20; }
+  .status { display:flex; justify-content:space-between; padding:10px 24px 4px; font-size:13px; font-weight:600; }
+  .crumbs { display:flex; align-items:center; gap:8px; padding:8px 16px; font-size:13px; color:#8e8e93; }
+  .crumbs b { color:#1c1c1e; font-weight:700; font-size:14px; }
+  .crumbs .dot { width:9px; height:9px; border-radius:50%; }
+  .card-tab { display:flex; gap:8px; padding:0 16px 10px; }
+  .chip { font-size:12px; padding:4px 12px; border-radius:16px; background:#f1f1f4; color:#6e6e73; }
+  .chip.on { background:#eaf3ff; color:#0a84ff; font-weight:600; }
+  .graph { position:relative; height:540px; background:#f8f9fb; }
+  .node { position:absolute; color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:11px; font-weight:700; text-align:center; clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%); box-shadow:0 2px 6px rgba(0,0,0,.12); }
+  .node b{font-weight:700;} .node .c{font-size:9px;font-weight:400;opacity:.9;}
+  .node.super{font-size:13px;}
+  .line{position:absolute;background:#c7ccd4;height:2px;transform-origin:0 50%;}
+  .line.hot{background:#0a84ff;height:3px;}
+  .btn-fab { position:absolute; right:16px; bottom:16px; z-index:30; }
+  .btn-fab button { background:#0a84ff; color:#fff; border:none; padding:13px 20px; border-radius:24px; font-size:15px; font-weight:600; box-shadow:0 6px 20px rgba(10,132,255,.4); cursor:pointer; }
+  .btn-fab button:active{ transform:scale(.96);}
+  /* 底部抽屉 */
+  .mask { position:absolute; inset:0; background:rgba(0,0,0,.4); z-index:40; opacity:0; pointer-events:none; transition:opacity .25s; }
+  .phone.open .mask{ opacity:1; pointer-events:auto; }
+  .sheet { position:absolute; left:0; right:0; bottom:0; z-index:50; background:#fff; border-radius:20px 20px 0 0; padding:16px; max-height:78%; overflow:auto; transform:translateY(100%); transition:transform .3s; }
+  .phone.open .sheet{ transform:translateY(0); }
+  .grab { width:40px; height:5px; background:#d1d1d6; border-radius:3px; margin:0 auto 12px; }
+  .sheet-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .sheet-head h2 { font-size:18px; } .sheet-head .close{ font-size:24px; color:#8e8e93; cursor:pointer; line-height:1;}
+  .kpi { display:flex; gap:10px; margin-bottom:14px; }
+  .kpi .k { flex:1; background:#f8f9fb; border:1px solid #ececf0; border-radius:12px; padding:10px 6px; text-align:center; }
+  .kpi .v{ font-size:18px; font-weight:700; } .kpi .lb{ font-size:10px; color:#8e8e93; }
+  .sec { background:#f8f9fb; border-radius:14px; padding:12px; margin-bottom:12px; font-size:13px; line-height:1.5; }
+  .sec h3{ font-size:13px; margin-bottom:8px; color:#1c1c1e; }
+  .sec .tag{ display:inline-block; font-size:10px; font-weight:700; padding:2px 8px; border-radius:6px; margin-bottom:4px; }
+  .sec li{ list-style:none; display:flex; gap:8px; margin-bottom:6px; color:#6e6e73; font-size:12px; }
+  .soft { background:#eaf3ff; border-color:#d3e6ff; }
+  .act { background:#fff; border:1px solid #0a84ff; }
+  .dot{width:8px;height:8px;border-radius:50%;flex:none;margin-top:4px;}
+</style>
+</head>
+<body>
+<div class="phone" id="ph">
+  <div class="notch"></div>
+  <div class="status"><span>9:41</span><span>EvolvMind</span></div>
+  <div class="crumbs"><span style="color:#8e8e93;">总览</span> <span style="color:#c7ccd4;">›</span> <span class="dot" style="background:#e0343c;"></span> <b>学习</b></div>
+
+  <div class="card-tab">
+    <span class="chip on">全部</span><span class="chip">7天</span><span class="chip">30天</span>
+  </div>
+
+  <div class="graph">
+    <div class="line" style="left:70px;top:250px;width:100px;transform:rotate(-30deg)"></div>
+    <div class="line hot" style="left:70px;top:250px;width:105px;transform:rotate(25deg)"></div>
+    <div class="line" style="left:170px;top:250px;width:90px;transform:rotate(-10deg)"></div>
+    <div class="line" style="left:170px;top:250px;width:80px;transform:rotate(20deg)"></div>
+    <div class="node" style="left:36px;top:150px;width:52px;height:52px;background:#e0343c;">阅读<br><span class="c">8</span></div>
+    <div class="node" style="left:238px;top:120px;width:52px;height:52px;background:#0e9e8a;">教育<br><span class="c">8</span></div>
+    <div class="node super" style="left:118px;top:222px;width:64px;height:64px;background:#0a84ff;">学习<b>方法</b><span class="c">33</span></div>
+    <div class="node" style="left:250px;top:290px;width:52px;height:52px;background:#25a55c;">笔记<br><span class="c">10</span></div>
+    <div class="node" style="left:52px;top:310px;width:52px;height:52px;background:#e3a008;">复习<br><span class="c">3</span></div>
+    <div class="node" style="left:210px;top:200px;width:40px;height:40px;background:#8e44ad;">知识<span class="c">19</span></div>
+  </div>
+
+  <div class="btn-fab"><button onclick="document.getElementById('ph').classList.add('open')">📊 话题状况</button></div>
+
+  <!-- 底部抽屉：话题状况 -->
+  <div class="mask" onclick="document.getElementById('ph').classList.remove('open')"></div>
+  <div class="sheet">
+    <div class="grab"></div>
+    <div class="sheet-head">
+      <h2>学习方法 · 状况</h2>
+      <span class="close" onclick="document.getElementById('ph').classList.remove('open')">×</span>
+    </div>
+
+    <!-- 概览 -->
+    <div class="sec soft">
+      <span class="tag" style="background:#0a84ff;color:#fff;">概览</span>
+      你记录最多的主题（<b>33 条</b>）。最近关注<b>专注力</b>与<b>时间管理</b>，想把方法落地成日常习惯。
+    </div>
+
+    <div class="kpi">
+      <div class="k"><div class="v" style="color:#0a84ff;">33</div><div class="lb">内容</div></div>
+      <div class="k"><div class="v" style="color:#1a9b4a;">+2</div><div class="lb">本周新增</div></div>
+      <div class="k"><div class="v">3</div><div class="lb">关联主题</div></div>
+      <div class="k"><div class="v" style="color:#e0343c;">↑</div><div class="lb">趋势</div></div>
+    </div>
+
+    <div class="sec">
+      <h3>值得注意的变化</h3>
+      <ul>
+        <li><span class="dot" style="background:#1a9b4a"></span><span><b>专注力</b> · 本周新增 1 条（你越来越在意上午高效专注）</span></li>
+        <li><span class="dot" style="background:#8e8e93"></span><span><b>阅读与论文</b> · 2 周无新增（可回顾或补充）</span></li>
+      </ul>
+    </div>
+
+    <div class="sec act">
+      <h3>下一步建议</h3>
+      <ul>
+        <li><span class="dot" style="background:#0a84ff"></span><span>「学习方法×工作」关联强 —— 试着把方法用到实际工作</span></li>
+        <li><span class="dot" style="background:#0a84ff"></span><span>专注力在扩张 —— 建议整理成可复用的晨间/工作习惯清单</span></li>
+      </ul>
+    </div>
+  </div>
+</div>
+</body>
+</html>
