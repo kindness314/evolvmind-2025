@@ -91,15 +91,24 @@ function extractJsonArray(text: string): unknown[] | null {
  */
 async function enrichRecommendationReasons(recommendations: RecommendationItem[], apiKey: string): Promise<RecommendationItem[]> {
   if (!apiKey || recommendations.length === 0) return recommendations;
+  // 2026-09-19 修复模板腔：原先只传类型+标题，LLM 没有具体素材只能写套话
+  // （"把 A 和 B 放在一起看"式）。现在把确定性理由（含相似度/共享标签/天数/传导链等具体数据）
+  // 作为素材传入，LLM 只做口语化改写，并明令禁止高频套话。
+  // 注：唯一可用的聊天模型 M2.5 是推理型，冷启动 12-30s（实测），超时 30s 是必要的；
+  // 超时后保留确定性理由（已按类型优化），推荐不会因改写失败而空白。
   const prompt = [
-    `你是知识助手，理解用户记录意图。下面有 ${recommendations.length} 条知识推荐，请为每条生成一句自然、贴切、有洞察的中文推荐理由（≤40字，第二人称"你"，不要模板套话，不同条理由句式尽量不同，像真人读懂用户的推荐语）。`,
+    `你是知识助手，理解用户记录意图。下面有 ${recommendations.length} 条知识推荐，每条附有一条系统生成的草稿理由（包含具体数据）。请为每条改写为一句自然、贴切、有洞察的中文推荐理由。`,
+    `要求：`,
+    `- ≤40字，第二人称"你"，每条句式不同，像真人读懂后随口说的`,
+    `- 必须保留草稿中的具体事实（数字、标签、天数、中间主题名），禁止丢失`,
+    `- 禁止使用这些套话：放在一起看、反复想的是同一件事、值得留意、理清楚、各记各的、回头看也许还有价值`,
     `只输出 JSON 数组，如 ["理由1","理由2",...]，与输入顺序一一对应。`,
     ``,
-    ...recommendations.map((r, i) => `【${i}】类型 ${r.type}：${r.title}`),
+    ...recommendations.map((r, i) => `【${i}】类型 ${r.type}：${r.title}\n草稿理由：${r.reason}`),
   ].join('\n');
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+    const timer = setTimeout(() => controller.abort(), 30_000);
     const resp = await fetch(`${MINIMAX_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -107,12 +116,13 @@ async function enrichRecommendationReasons(recommendations: RecommendationItem[]
       signal: controller.signal,
     });
     clearTimeout(timer);
-    if (!resp.ok) return recommendations;
+    if (!resp.ok) { console.error('[enrich] http', resp.status); return recommendations; }
     const text = await resp.text();
     const arr = extractJsonArray(text);
-    if (!arr || arr.length !== recommendations.length) return recommendations;
+    if (!arr || arr.length !== recommendations.length) { console.error('[enrich] parse/length', arr?.length, text.slice(0, 120)); return recommendations; }
     return recommendations.map((r, i) => ({ ...r, reason: typeof arr[i] === 'string' && arr[i] ? arr[i] : r.reason }));
-  } catch {
+  } catch (e) {
+    console.error('[enrich] exception', e instanceof Error ? e.message : e);
     return recommendations;
   }
 }
@@ -340,11 +350,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           id: recId,
           type: 'review',
           title: item.title || '未命名内容',
-          reason: `${ago}你记录了「${item.title}」${item.tags?.length ? `（标签：${item.tags.slice(0, 3).join('、')}）` : '（没有标签）'}——它当时可能是个灵光一现的想法，回头看也许还有价值`,
+          reason: `${ago}你记录了「${item.title}」${item.tags?.length ? `（标签：${item.tags.slice(0, 3).join('、')}）` : '（没有标签）'}——这条还没连进你的知识网络，是个悬着的想法`,
           action: nodeCount === 0
             ? item.tags?.length
-              ? `「${item.title}」值得再读一遍——如果它还是你想的，给它补一点自己的想法；如果今非昔比，就让它过去`
-              : `「${item.title}」你想过就忘了？花 1 分钟回忆一下当时为什么记它，也许能捡回一个思路`
+              ? `给「${item.title}」补一句你现在的想法或结论——有后续的记才会长成知识，没后续的只是备忘`
+              : `「${item.title}」还没贴标签也没连成节点——花 1 分钟回忆当时为什么记它，有价值就补一句，没有就删掉`
             : `「${item.title}」你已经想到 ${nodeCount} 处了——回看一下，是不是该把这个想法往前推一步`,
           targetType: 'captured',
           targetId: item.id,
@@ -387,8 +397,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             id: recId,
             type: 'semantic',
             title: `${aTitle} ↔ ${bTitle}`,
-            reason: `「${aTitle}」（${aAgo}，标签：${aTags}）与「${bTitle}」（${bAgo}，标签：${bTags}）词面完全不同，但语义相似度高达 ${simPct}%——你很可能在两次记录中反复想的是同一件事`,
-            action: `这两条记录其实指向你一直在琢磨的同一个主题——把「${aTitle}」和「${bTitle}」放在一起看，可能帮你把这个想法理清楚，而不是只记了两条孤立笔记`,
+            reason: `「${aTitle}」（${aAgo}，标签：${aTags}）与「${bTitle}」（${bAgo}，标签：${bTags}）词面完全不同，但语义相似度高达 ${simPct}%——两条记录谈的可能是同一件事的不同侧面`,
+            action: `重读这两条，用一句话写下它们共同在说什么——这句话就是你这个主题的雏形`,
             targetType: 'captured',
             targetId: pair.a.id,
             secondaryTargetId: pair.b.id,
@@ -431,8 +441,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             title: `${bp.captureA.title} → ${bp.captureB.title}`,
             reason: `你的图谱里存在一条传导链 ${chain}：「${bp.captureA.title}」落在链的一端，「${bp.captureB.title}」落在另一端——两条看起来无关的记录，其实被同一个中间主题串起来了`,
             action: bp.midNode
-              ? `这两条记录看似无关，其实被「${bp.midNode.name}」悄悄串起来——你可能是从「${bp.nodeA.name}」一路想到了「${bp.nodeB.name}」，这个思维链条值得留意`
-              : `「${bp.nodeA.name}」和「${bp.nodeB.name}」之间可能有你没想到的联系，值得深入想想这对你意味着什么`,
+              ? `顺着「${bp.midNode.name}」这条链补一条中间记录（当时具体发生了什么）——链条就变成可追溯的因果线`
+              : `「${bp.nodeA.name}」和「${bp.nodeB.name}」之间可能有你没想到的联系——花一分钟想想，有联系就补一条记录钉住它`,
             targetType: 'captured',
             targetId: bp.captureA.id,
             secondaryTargetId: bp.captureB.id,
@@ -551,7 +561,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               type: 'related',
               title: `${a.title} ↔ ${b.title}`,
               reason: `「${a.title}」（${daysAgoText(a.created_at)}）与「${b.title}」（${daysAgoText(b.created_at)}）共享标签「${sharedTags.slice(0, 3).join('、')}」，可能属于同一主题`,
-              action: `这几条（「${a.title}」「${b.title}」）都在说「${sharedTags[0]}」——你可能正在形成对这个主题的看法，值得把它们放在一起回顾，而不是各记各的`,
+              action: `给「${sharedTags[0]}」下的记录做一次 5 分钟盘点：哪些已解决、哪些还悬着——悬着的挑一条今天推进`,
               targetType: 'captured',
               targetId: a.id,
               secondaryTargetId: b.id,

@@ -39,3 +39,23 @@
 ## 环境备忘
 
 - 本机 `vercel dev` 需显式 `vercel link --yes --project evolvmind-2025`（目录名大写导致自动链接报 project name 400）；已链接，`.vercel/project.json` 生成、`.env.local` 被 vercel 刷新。
+
+## 追加：推荐/总结质量修复（同日第二轮，用户反馈"建议无效"）
+
+### 诊断（真实输出驱动）
+- 推荐第 1 条是"截图文件 ↔ 无法提取信息 83% 相似"——**解析失败的空壳记录穿透了噪声过滤**（有标签+元数据正文，不满足旧规则）
+- 30d 总结围绕 2 条记录（其中 1 条垃圾）编出"核心枢纽/知识体系"幻觉叙事——**稀疏数据无降级**
+- 推荐理由/建议全是模板套话——**enrich 只传标题不传素材 + M2.5 冷启动 11.9s > 5s 超时 → LLM 改写恒失败回退**
+
+### 修复
+- `noise.ts`：新增解析失败关键词（无法提取/未提供实际/仅包含文件名等）+ 标题模式（无法提取/截图文件/屏幕截图/IMG_/Screenshot）+ 元数据正文判定（正则匹配开头且剩余 ≤10 字，OCR 正文不误伤）+ 3 个测试用例
+- `summarize.ts`：有效记录（`capturedList` 已滤噪声）<3 条 → 跳过 LLM，返回诚实"数据不足"骨架 + 记录习惯建议（顺带提速：4.2s vs 17.8s）；nextActions prompt 加证据约束（必须引用骨架真实主题）
+- `recommend.ts`：enrich prompt 传入确定性理由作素材 + 明令禁止套话清单 + 超时 5s→30s（M2.5 推理型冷启动 12-30s，无更快可用模型——探测过 M3/GLM/Kimi/DeepSeek 全 403）；enrich 失败加 console.error 日志（[enrich] 前缀）；确定性 reason/action 模板按类型重写（语义对/图桥/共享标签/回顾各给具体动作）
+
+### 数据清理（demo，用户批准）
+- 删 4 条空壳捕获（2 纯元数据截图 + 2 提取失败文本）+ 派生节点 3（一键提交功能/功能缺失/这下应该可以了）+ 关联边 2 + topic_labels 缓存 + storage 对象 2；'用户' 节点剥离垃圾 source（7→6）
+
+### 验证
+- typecheck ✓ / build ✓ / npm test 48 ✓（+2 噪声用例）
+- 实测：推荐无垃圾配对；建议为具体动作；30d 稀疏窗口返回诚实降级；LLM 改写质量实测优秀（"你其实在同时处理同一批压力源"），但受 provider QPM 429 限制时会回退确定性文案（日志可查）
+- 待做：QPM 空闲时跑 `scripts/eval-effectiveness.mjs --dataset deepening` 回归门禁

@@ -860,6 +860,7 @@ JSON 格式（每字段最多 5 项）：
 - 【时间推进】如果上下文包含【每周变化】章节，narrative 必须体现时间推进弧线（如"第1周…到第4周…"），明确各周关注点如何迁移，但只使用骨架中的周数据
 - themes 的 insight 不要只说"这是高频主题"，要分析该主题的出现模式、与其它主题的关联
 - nextActions 要具体可执行（如"本周尝试记录每次加班后的睡眠时长，检验你怀疑的因果关系"），不要空话（如"继续努力"）
+- 【证据约束】nextActions 的每一条必须基于【确定性骨架】或【社区摘要】中真实存在的主题名/趋势/节点，并显式提及它（如「加班」）；禁止围绕骨架中不存在的主题编建议，也禁止围绕单条孤立记录展开深度解读
 - 【重要】忽略以下无意义内容：日常琐碎（吃饭、睡觉、通勤）、具体时刻（22点、00:40）、泛化概念（计划、工作、学习、生活）、泛称地点（家、公司、食堂）。这些不会产生有价值的洞察
 - importantNodes 只选对用户有实质意义的节点（如具体项目名、方法论、工具、人名、关键结论），不要选日常生活类节点
           - 如果数据中只有琐碎节点，importantNodes 可以少于 5 个，宁缺毋滥`,
@@ -993,6 +994,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (agg.capturedCount === 0 && agg.newNodeCount === 0) {
       const empty = buildDeterministicResponse(agg, period, trends, themeDirections, []);
       res.status(200).json(empty);
+      return;
+    }
+
+    // 稀疏降级（2026-09-19）：有效（非噪声）记录 <3 条时跳过 LLM。
+    // 根因：一两条记录喂给 LLM 会编出"核心枢纽/知识体系"式幻觉叙事与虚假 themes，
+    // 实测 30d 窗口仅 2 条记录时生成了完整的三主题解读（全是编造）。
+    // 此时只回诚实的数据不足骨架 + 记录习惯建议。
+    if (agg.capturedList.length < 3) {
+      const sparse = buildDeterministicResponse(agg, period, trends, themeDirections, []);
+      sparse.narrative = `这段时间你的有效记录只有 ${agg.capturedList.length} 条，数据太少，看不出真正的规律和趋势。总结功能需要至少几条有实质内容的记录才能给出有意义的分析——现在强行总结只会是猜测。`;
+      sparse.themes = [];
+      sparse.importantNodes = [];
+      sparse.newConnections = [];
+      sparse.nextActions = [
+        '每天随手记 1-2 条：一个想法、一个决定、一个遇到的问题——积累几天后总结才有分析价值',
+        '记录时多写一句"为什么"或"接下来怎么办"，比只记事实更能帮助系统发现你的关注点',
+      ];
+      res.status(200).json(sparse);
       return;
     }
 

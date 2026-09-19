@@ -20,6 +20,32 @@ describe('噪声过滤（P1 种子噪声泄漏修复）', () => {
     const result = isNoiseCapture('番茄工作法', '专注力训练方法');
     expect(typeof result).toBe('boolean');
   });
+
+  it('解析失败/空壳记录判噪声（2026-09-19）', () => {
+    // 纯元数据截图（OCR 未产出正文）
+    expect(isNoiseCapture(
+      '截图文件 2026-07-06',
+      '用户仅提供了截图文件的元数据（文件名、文件类型、文件大小），未提供实际的图片内容，无法提取具体的视觉信息。',
+      '文件名: 屏幕截图 2026-07-06 011020.png 文件类型: image/png 文件大小: 114791 bytes',
+      ['截图', '图片', 'PNG'],
+    )).toBe(true);
+    // 标题直接是“无法提取信息”
+    expect(isNoiseCapture('无法提取信息', '提供的文件信息仅包含文件名，文件类型和文件大小', '文件名: a.png 文件类型: image/png 文件大小: 100 bytes')).toBe(true);
+    // 内容过于简短的提取失败
+    expect(isNoiseCapture('无标题内容', "用户提供的内容过于简短，仅有'这下应该可以了'一句，无法提取具体的主题或信息", '这下应该可以了')).toBe(true);
+    // 文件名截图类标题
+    expect(isNoiseCapture('屏幕截图 2026-08-17 231518.png', undefined, '一堆正文内容超过十个字的有效内容', ['截图'])).toBe(true);
+  });
+
+  it('正常文件记录（OCR/解析成功）不误判', () => {
+    // 有真实 OCR 正文的图片记录：标题正常、summary 是真实内容
+    expect(isNoiseCapture(
+      '产品需求文档截图',
+      '截图中包含产品需求文档的三个核心模块说明与优先级标注',
+      '文件名: prd.png 文件类型: image/png 文件大小: 204800 bytes\n\n识别内容：本需求文档包含三个核心模块...',
+      ['产品', '需求'],
+    )).toBe(false);
+  });
 });
 
 describe('琐碎节点名', () => {

@@ -122,6 +122,9 @@ const VAGUE_TWO_CHAR = new Set([
 const NOISE_CAPTURE_KEYWORDS = [
   '无意义', '随便', '测试', 'test', '不知道写什么', '没什么', '没事',
   'asdf', 'qwer', 'test test', '不知道', '123', 'abc',
+  // 解析失败/空壳记录（2026-09-19）：多模态解析未产出正文的历史存量，
+  // 其 summary 是失败说明而非内容本身，进入推荐/总结会产生幻觉配对
+  '无法提取', '未提供实际', '仅提供了', '仅包含文件名', '建议提供更详细', '过于简短',
 ];
 
 // ============================================================================
@@ -134,7 +137,17 @@ const NOISE_CAPTURE_TITLE_PATTERNS: RegExp[] = [
   /^测试/,
   /^test/i,
   /^\d+$/,
+  // 解析失败/空壳标题（2026-09-19）
+  /^无法提取/,
+  /^无标题内容/,
+  /^截图文件/,
+  /^屏幕截图\s*\d/,
+  /^img[_-]?\d/i,
+  /^screenshot/i,
 ];
+
+/** 纯文件元数据描述正文（文件名/类型/大小三行，OCR/解析未产出任何正文） */
+const METADATA_ONLY_CONTENT_PATTERN = /^\s*文件名[:：][\s\S]{0,200}文件类型[:：][\s\S]{0,80}文件大小[:：]/;
 
 // ============================================================================
 // 公开 API
@@ -187,6 +200,15 @@ export function isNoiseCapture(title: string, summary?: string, content?: string
 
   for (const re of NOISE_CAPTURE_TITLE_PATTERNS) {
     if (re.test(title)) return true;
+  }
+
+  // 正文只是文件元数据描述（无 OCR/解析正文）→ 无信息量。
+  // 判定：匹配元数据开头，且其后剩余文本剥掉标点/数字/空白后 ≤10 字（有 OCR 正文的不误伤）
+  const contentText = content || '';
+  const metaMatch = contentText.match(METADATA_ONLY_CONTENT_PATTERN);
+  if (metaMatch) {
+    const rest = contentText.slice(metaMatch[0].length).replace(/[\s\p{P}\p{N}A-Za-z]/gu, '');
+    if (rest.length <= 10) return true;
   }
 
   // 无标签 + 正文剥标点/空白后 ≤10 字 → 琐碎白描，不是有效观察
