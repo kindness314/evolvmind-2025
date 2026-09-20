@@ -10,7 +10,7 @@
 
 import { supabase } from './supabase';
 
-export type RecommendationType = 'review' | 'semantic' | 'graph_bridge' | 'forming' | 'related';
+export type RecommendationType = 'review' | 'semantic' | 'graph_bridge' | 'forming' | 'related' | 'knowledge_node' | 'knowledge_topic';
 export type RecommendationTarget = 'captured' | 'node';
 
 export interface Recommendation {

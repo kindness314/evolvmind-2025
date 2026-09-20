@@ -4,6 +4,7 @@ import {
   buildGraphIndex,
   personalizedPageRank,
   findGraphBridgePaths,
+  shortestPathNames,
   chainText,
   computeDepthProfile,
   findImplicitPairs,
@@ -45,10 +46,16 @@ describe('图谱索引与桥路径', () => {
     { ...captured('c2', 2, '咖啡因'), tags: ['健康'] },
   ];
 
-  it('buildGraphIndex 建立节点→捕获与捕获→节点映射（来源为节点 source_captured_ids）', () => {
+  it('shortestPathNames 返回到最近种子的最短路径（含两端名称）', () => {
     const index = buildGraphIndex(nodes, links);
-    expect(index.nodeToCaptured.get('n1')).toEqual(new Set(['c1']));
-    expect(index.capturedToNodes.get('c2')).toEqual(new Set(['n3']));
+    // n4 → 种子 n1：路径从候选节点到种子（晨跑-咖啡-睡眠不足-加班）
+    expect(shortestPathNames(index, 'n4', new Set(['n1']))).toEqual(['晨跑', '咖啡', '睡眠不足', '加班']);
+    // fromId 本身是种子 → 单节点路径
+    expect(shortestPathNames(index, 'n1', new Set(['n1']))).toEqual(['加班']);
+    // 不连通 → null
+    expect(shortestPathNames(index, 'n4', new Set(['nX']))).toBeNull();
+    // maxDepth 限制：n4 距 n1 为 3 跳，maxDepth=2 找不到
+    expect(shortestPathNames(index, 'n4', new Set(['n1']), 2)).toBeNull();
   });
 
   it('二跳桥：A 节点 → 中间节点 → B 节点（mid 不直接关联任一捕获）', () => {

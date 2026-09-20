@@ -30,6 +30,8 @@ export interface NodeRow {
   kind: string;
   source_captured_ids?: string[];
   created_at?: string;
+  /** 最后一次被合并/更新（推荐"多久没碰"文案用） */
+  updated_at?: string;
 }
 
 export interface LinkRow {
@@ -287,6 +289,49 @@ export function findGraphBridgePaths(
 export function chainText(nodeA: string, mid: string | null, nodeB: string): string {
   if (!mid) return `「${nodeA}」⇄「${nodeB}」`;
   return `「${nodeA}」→「${mid}」→「${nodeB}」`;
+}
+
+/**
+ * BFS 最短路径：从 fromId 到 targetIds 中最近的节点，返回节点名路径（含两端）。
+ * 用于知识推荐的证据链文案（「休眠节点」←…←「最近记录」）。
+ * 找不到返回 null；fromId 在 targetIds 中时返回单节点路径。
+ */
+export function shortestPathNames(
+  index: GraphIndex,
+  fromId: string,
+  targetIds: Set<string>,
+  maxDepth = 6,
+): string[] | null {
+  if (!index.nodeById.has(fromId) || targetIds.size === 0) return null;
+  const nameOf = (id: string) => index.nodeById.get(id)?.name || id;
+  if (targetIds.has(fromId)) return [nameOf(fromId)];
+
+  // BFS：prev 记录前驱，找到第一个属于 targetIds 的节点即回溯
+  const prev = new Map<string, string | null>([[fromId, null]]);
+  let frontier = [fromId];
+  let hitId: string | null = null;
+  for (let depth = 0; depth < maxDepth && !hitId && frontier.length > 0; depth += 1) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const nb of index.adj.get(id) || []) {
+        if (prev.has(nb)) continue;
+        prev.set(nb, id);
+        if (targetIds.has(nb)) { hitId = nb; break; }
+        next.push(nb);
+      }
+      if (hitId) break;
+    }
+    frontier = next;
+  }
+  if (!hitId) return null;
+
+  const path: string[] = [];
+  let cur: string | null = hitId;
+  while (cur) {
+    path.unshift(nameOf(cur));
+    cur = prev.get(cur) ?? null;
+  }
+  return path;
 }
 
 // ---------------------------------------------------------------------------

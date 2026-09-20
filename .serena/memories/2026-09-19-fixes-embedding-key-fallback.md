@@ -36,6 +36,19 @@
 - 本次提交把 08-14~09-03 遗留的 working tree 改动（HomePage 推荐依据折叠、3 个新记忆文件、08-18 任务目录、public/demo-*.html、IMPROVEMENT.md 等）与本次修复一并入库。
 - **仍未 push**（等用户明确要求推 origin + vercel 双远程）。
 
+## 推荐改向：图搜索知识推荐（2026-09-19，用户验收方向变更）
+- **用户反馈**：推荐目标应是「知识」（图谱节点/小主题），不是「两条记录很像」；以近期话题为种子做图搜索。
+- **实现**（复用 P7 PPR 基建）：
+  - `api/_lib/insights.ts` 新增 `shortestPathNames(index, fromId, targetIds, maxDepth=6)`：BFS 最短路径，返回节点名数组（**候选在前、种子在后**），不通/超深返回 null；节点查询补 `updated_at`（"最近整理是 N 天前"文案）。
+  - `api/recommend.ts` 新增 Rule 0 knowledge：近 14 天捕获关联节点为种子跑 `personalizedPageRank`；排除本窗口（40 条捕获）触碰的活跃节点 + 琐碎节点 → 休眠高分节点。两类候选：
+    - `knowledge_topic`：休眠节点按 `topic_labels` 细主题归组（排除「其他」，≥2 成员，top2，base 0.75），理由含成员数+代表节点+证据链，targetType `node` 指向代表节点。
+    - `knowledge_node`：PPR top4 休眠节点（base 0.7），理由含关联记录数 + 最近整理时间 + 证据链。
+  - 证据链文案：路径首元素是候选自身，`.slice(1)` 从下一跳起展示（「午间小睡→咖啡」而非「午间小睡→午间小睡→咖啡」）。
+  - 打分接入现有 P5 统一管道（graph=PPR 归一化分，semantic/keyword=0）；`MAX_PER_TYPE=2` 保证新旧类型共存。
+- **前端**：`src/lib/recommend.ts` 类型联合 + 两新类型；`HomePage.tsx` recTypeMeta + typeOrder 加「主题推荐」(amber)/「知识回顾」(violet) 置顶；点击复用已有 `targetType==='node'` → 图谱定位逻辑（零改动）。
+- **验证**：48 测试全过（新增 shortestPathNames 4 断言）；demo 实测 6 条推荐含 主题「睡眠」（6 知识点，经 咖啡 与近期相连）+ 节点「精力」（43 天没碰）；浏览器确认分组渲染 + 点击跳图谱定位到「午间小睡」成员层。
+- **未动**：semantic/related/review 等记录级推荐保留（用户未要求删）；LLM enrich 429 回退确定性文案。
+
 ## 环境备忘
 
 - 本机 `vercel dev` 需显式 `vercel link --yes --project evolvmind-2025`（目录名大写导致自动链接报 project name 400）；已链接，`.vercel/project.json` 生成、`.env.local` 被 vercel 刷新。

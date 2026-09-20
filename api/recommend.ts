@@ -28,6 +28,8 @@ import {
   findGraphBridgePaths,
   findPprBridgePaths,
   findImplicitPairs,
+  personalizedPageRank,
+  shortestPathNames,
   chainText,
   type CapturedRow,
   type NodeRow,
@@ -58,7 +60,7 @@ export interface RecommendationEvidence {
 
 interface RecommendationItem {
   id: string;
-  type: 'review' | 'semantic' | 'graph_bridge' | 'forming' | 'related';
+  type: 'review' | 'semantic' | 'graph_bridge' | 'forming' | 'related' | 'knowledge_node' | 'knowledge_topic';
   title: string;
   reason: string;
   action: string;
@@ -283,7 +285,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? 'user_id=is.null'
       : `user_id=eq.${encodeURIComponent(scopeId)}`;
     // 查询知识节点（分页拉全：PostgREST 默认 max_rows=1000，limit=2000 会被静默截断为 1000）
-    const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids&${nodesScopeFilter}`;
+    const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,updated_at&${nodesScopeFilter}`;
     const nodes: NodeRow[] = (await fetchAllRows(nodesUrl, headers)) as NodeRow[];
 
     // 查询知识链接（同样分页拉全）
@@ -571,6 +573,121 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             keyword: kwSignal(`${a.title || ''} ${b.title || ''}`),
             graph: 0,
             base: 0.2,
+          });
+        }
+      }
+    }
+
+    // --- Rule 0: knowledge — 图搜索知识推荐（2026-09-19 用户改向）---
+    // 推荐目标是图谱里的知识（节点/小主题），不是记录对：
+    // 以近 14 天捕获关联的节点为 PPR 种子，找「与最近思考强相关、但最近没碰」的
+    // 休眠节点与小主题；证据链 = 候选到种子的 BFS 最短路径。
+    {
+      const RECENT_SEED_DAYS = 14;
+      const seedCutoff = Date.now() - RECENT_SEED_DAYS * 24 * 3600 * 1000;
+      const recentSeeds = signalCaptured.filter((c) => {
+        const t = new Date(c.created_at).getTime();
+        return Number.isFinite(t) && t >= seedCutoff;
+      });
+      const seedNodeIds = new Set<string>();
+      for (const c of recentSeeds) {
+        for (const nid of graphIndex.capturedToNodes.get(c.id) || []) seedNodeIds.add(nid);
+      }
+      // 活跃节点 = 本窗口（40 条近期捕获）触碰过的节点，推“最近没碰”的就要排除它们
+      const activeNodeIds = new Set<string>();
+      for (const c of signalCaptured) {
+        for (const nid of graphIndex.capturedToNodes.get(c.id) || []) activeNodeIds.add(nid);
+      }
+      // 近期话题名（标签频率 top3），用于理由文案
+      const recentTagFreq = new Map<string, number>();
+      for (const c of recentSeeds) for (const t of c.tags || []) recentTagFreq.set(t, (recentTagFreq.get(t) || 0) + 1);
+      const hotText = [...recentTagFreq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => `「${t}」`).join('');
+      const hotClause = hotText ? `你最近在记${hotText}` : '你最近在持续记录';
+
+      if (seedNodeIds.size > 0) {
+        const ppr = personalizedPageRank(graphIndex, [...seedNodeIds]);
+        const dormant = [...ppr.entries()]
+          .filter(([id, score]) => score > 0 && !activeNodeIds.has(id))
+          .map(([id, score]) => ({ node: graphIndex.nodeById.get(id), score }))
+          .filter((e): e is { node: NodeRow; score: number } =>
+            Boolean(e.node) && !isTrivialNodeName(e.node!.name) && (graphIndex.adj.get(e.node!.id)?.size || 0) >= 1)
+          .sort((a, b) => b.score - a.score);
+        const maxPpr = dormant[0]?.score || 1;
+
+        // 小主题缓存：topic_labels（cluster_key=node_id, name=细主题），供主题聚合
+        const topicMap = new Map<string, string>();
+        try {
+          const labelUrl = `${baseUrl}/rest/v1/topic_labels?scope_id=eq.${encodeURIComponent(scopeId)}&select=cluster_key,name`;
+          const labelRows = (await fetchAllRows(labelUrl, headers)) as Array<{ cluster_key: string; name: string }>;
+          for (const r of labelRows) topicMap.set(r.cluster_key, r.name);
+        } catch { /* 主题缓存不可用时跳过小主题推荐 */ }
+
+        // 小主题推荐：休眠高分节点按细主题归组（排除「其他」），组内 ≥2 个成员才成题
+        const byTopic = new Map<string, { score: number; members: { node: NodeRow; score: number }[] }>();
+        for (const { node, score } of dormant.slice(0, 40)) {
+          const topic = topicMap.get(node.id);
+          if (!topic || topic === '其他') continue;
+          if (!byTopic.has(topic)) byTopic.set(topic, { score: 0, members: [] });
+        
+          const g = byTopic.get(topic)!;
+          g.score += score;
+          g.members.push({ node, score });
+        }
+        const topics = [...byTopic.entries()]
+          .filter(([, g]) => g.members.length >= 2)
+          .sort((a, b) => b[1].score - a[1].score)
+          .slice(0, 2);
+        const maxTopicScore = topics[0]?.[1].score || 1;
+        for (const [topic, g] of topics) {
+          const rep = g.members[0].node;
+          const names = g.members.slice(0, 3).map((m) => `「${m.node.name}」`).join('、');
+          const path = shortestPathNames(graphIndex, rep.id, seedNodeIds);
+          // 路径首元素是代表节点自身，文案中已列出成员名，证据链从下一跳开始更顺
+          const chainPath = path && path.length > 1 ? path.slice(1) : null;
+          const pathText = chainPath ? `经 ${chainPath.map((n) => `「${n}」`).join('→')} 与之相连` : '与之高度相关';
+          candidates.push({
+            item: {
+              id: `ktopic-${topic}`,
+              type: 'knowledge_topic',
+              title: `主题「${topic}」`,
+              reason: `${hotClause}，而「${topic}」这一整块知识（${g.members.length} 个知识点，如 ${names}）${pathText}——这组知识点你最近都没碰过`,
+              action: `进入「${topic}」主题挑一个最陌生的知识点重读——它和你最近思考的问题可能有化学反应`,
+              targetType: 'node',
+              targetId: rep.id,
+              nodeId: rep.id,
+              evidence: g.members.slice(0, 3).map((m) => nodeEvidence(m.node)),
+            },
+            semantic: 0,
+            keyword: 0,
+            graph: g.score / maxTopicScore,
+            base: 0.75,
+          });
+        }
+
+        // 单节点推荐：PPR top 休眠节点
+        for (const { node, score } of dormant.slice(0, 4)) {
+          const path = shortestPathNames(graphIndex, node.id, seedNodeIds);
+          // 路径首元素是候选节点自身（标题已是它），证据链从下一跳开始
+          const chainPath = path && path.length > 1 ? path.slice(1) : null;
+          const pathText = chainPath ? `经 ${chainPath.map((n) => `「${n}」`).join('→')} 与它们相连` : '与近期话题高度相关';
+          const srcCount = node.source_captured_ids?.length || 0;
+          const updatedAgo = daysAgoText(node.updated_at || node.created_at || '');
+          candidates.push({
+            item: {
+              id: `knode-${node.id}`,
+              type: 'knowledge_node',
+              title: node.name,
+              reason: `${hotClause}，图谱里的「${node.name}」${pathText}——它关联了 ${srcCount} 条记录${updatedAgo ? `，最近整理是${updatedAgo}` : ''}，也许能给现在的思考提供素材`,
+              action: `打开图谱看看「${node.name}」的邻居——给它补一条最近的进展，或写一句它和你当前问题的关系`,
+              targetType: 'node',
+              targetId: node.id,
+              nodeId: node.id,
+              evidence: [nodeEvidence(node), ...recentSeeds.slice(0, 2).map(captureEvidence)],
+            },
+            semantic: 0,
+            keyword: 0,
+            graph: score / maxPpr,
+            base: 0.7,
           });
         }
       }

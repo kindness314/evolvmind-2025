@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Loader2, Plus, Sparkles, Bell, Eye, Tag, X, CalendarRange, TrendingUp, TrendingDown, Lightbulb, ArrowRight } from 'lucide-react';
+import { Loader2, Plus, Sparkles, Bell, Eye, Tag, X, CalendarRange, TrendingUp, TrendingDown, Lightbulb, ArrowRight, Layers, BookOpen } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { fetchSummary, type SummaryResponse, type SummaryPeriod } from '../../lib/summarize';
 import { fetchRecommendations, type Recommendation } from '../../lib/recommend';
@@ -64,6 +64,8 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
 
   // 推荐类型配置
   const recTypeMeta: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
+    knowledge_topic: { icon: <Layers className="w-3 h-3" />, label: '主题推荐', color: 'bg-amber-50 text-amber-700' },
+    knowledge_node: { icon: <BookOpen className="w-3 h-3" />, label: '知识回顾', color: 'bg-violet-50 text-violet-700' },
     review: { icon: <Eye className="w-3 h-3" />, label: '回顾', color: 'bg-blue-50 text-blue-700' },
     semantic: { icon: <Sparkles className="w-3 h-3" />, label: '语义关联', color: 'bg-indigo-50 text-indigo-700' },
     graph_bridge: { icon: <Tag className="w-3 h-3" />, label: '图桥发现', color: 'bg-emerald-50 text-emerald-700' },
@@ -113,7 +115,7 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
             </div>
           ) : recommendations.length > 0 ? (
             (() => {
-              const typeOrder = ['review', 'semantic', 'graph_bridge', 'forming', 'related'];
+              const typeOrder = ['knowledge_topic', 'knowledge_node', 'review', 'semantic', 'graph_bridge', 'forming', 'related'];
               const grouped = new Map<string, Recommendation[]>();
               for (const rec of recommendations) {
                 const list = grouped.get(rec.type) || [];
