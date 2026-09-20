@@ -1211,6 +1211,113 @@ const DATASETS = {
       daysAgo: 0,
     },
   ],
+
+  // demo-fresh: 2026-09-19 为「总结/推荐效果验收」定制的新鲜数据集。
+  // 设计意图：
+  //  - 近 7 天 7 条（dense 窗口，7d 总结有料）+ 8~30 天 5 条（趋势对比、周时间线）
+  //  - 延续现有 demo 图谱主题（加班/睡眠/晨跑/冥想/深度工作）→ 触发图桥与语义对
+  //  - 「英语学习」为全新主题 → 触发总结里的"新出现关注点"
+  //  - 加班↔家庭冲突为跨主题桥 → 测跨域关联推荐
+  'demo-fresh': [
+    // ---- 近 7 天 ----
+    {
+      type: 'note',
+      title: '加班到 23 点，失眠到凌晨',
+      content: '昨晚又加班到 23 点改需求文档，到家脑子还在转方案的事，凌晨 2 点才睡着。今天白天开会一直走神，leader 讲了两个需求我都没记住。感觉加班和睡眠已经成恶性循环了。',
+      tags: ['加班', '睡眠', '恶性循环'],
+      summary: '加班导致失眠，次日开会走神，意识到恶性循环。',
+      daysAgo: 0,
+    },
+    {
+      type: 'note',
+      title: '加班后晨跑实验：确实有效',
+      content: '按之前的想法试了：加班后的第二天强制晨跑 30 分钟。跑完出了一身汗，下午居然没那么困了，比喝咖啡管用。准备坚持一周看看睡眠有没有改善。',
+      tags: ['晨跑', '加班', '实验'],
+      summary: '加班后晨跑 30 分钟，下午精神状态明显改善。',
+      daysAgo: 1,
+    },
+    {
+      type: 'note',
+      title: '开始通勤英语播客计划',
+      content: '今天开始一个新计划：每天通勤路上听 15 分钟英语技术播客。目标是年底能不带字幕听懂技术 talks。第一天只听懂了大概一半，但坚持比完美重要。',
+      tags: ['英语', '学习', '通勤'],
+      summary: '启动通勤英语播客计划，目标年底听懂技术 talks。',
+      daysAgo: 2,
+    },
+    {
+      type: 'note',
+      title: '深度工作块初体验',
+      content: '今天上午试了 9 点到 11 点不看手机的深度工作块，把手机扔进抽屉。结果把拖了一周的方案初稿写完了。注意力残余那个研究说的对，不切换任务效率高得吓人。',
+      tags: ['深度工作', '时间块', '实践'],
+      summary: '两小时深度工作块完成拖延一周的方案初稿。',
+      daysAgo: 3,
+    },
+    {
+      type: 'note',
+      title: '英语播客第三天',
+      content: '英语播客第三天，开始能跟上 80% 了，记了 10 个生词。发现技术词汇比日常对话好懂，可能是因为工作里天天接触。通勤时间总算不浪费了。',
+      tags: ['英语', '学习', '进步'],
+      summary: '英语播客能跟上 80%，技术词汇理解更快。',
+      daysAgo: 4,
+    },
+    {
+      type: 'note',
+      title: '又推掉了家庭晚餐',
+      content: '这周第三次因为加班推掉和家人的晚饭，孩子说我不守信用。工作和家庭的平衡出问题了，排期砍范围的事必须真的落实，不能再拖。',
+      tags: ['家庭', '加班', '平衡'],
+      summary: '加班第三次挤占家庭时间，意识到平衡问题必须解决。',
+      daysAgo: 5,
+    },
+    {
+      type: 'note',
+      title: '周复盘：数据不说谎',
+      content: '周复盘：这周加班 3 次、晨跑 2 次、英语 4 天、家庭聚餐 0 次。明显看到加班天数和睡眠质量负相关，加班第二天的晨跑是唯一有效的补救。下周目标：加班压到 2 次以内，家庭聚餐至少 1 次。',
+      tags: ['复盘', '加班', '睡眠', '周总结'],
+      summary: '周复盘发现加班与睡眠负相关，晨跑是有效补救。',
+      daysAgo: 6,
+    },
+    // ---- 8~30 天（趋势对比/周时间线）----
+    {
+      type: 'note',
+      title: '冥想第十天：注意力变稳了',
+      content: '冥想第 10 天，思绪乱飞的次数明显少了，能专注在呼吸上超过 3 分钟。感觉对白天工作时的走神也有帮助，开会时能更快意识到自己走神了。',
+      tags: ['冥想', '注意力', '进步'],
+      summary: '冥想十天，注意力稳定性提升，迁移到工作场景。',
+      daysAgo: 9,
+    },
+    {
+      type: 'note',
+      title: '和 leader 谈妥砍范围',
+      content: '正式和 leader 谈了排期问题，拿出之前复盘的数据（加班时长和失误率的关系），他同意下周开始试行砍 20% 迭代范围。如果效果不好再调。这是排期问题第一次有实际行动。',
+      tags: ['排期', '加班', '沟通'],
+      summary: '用数据说服 leader 试行砍 20% 迭代范围。',
+      daysAgo: 12,
+    },
+    {
+      type: 'note',
+      title: '重读《深度工作》双峰哲学',
+      content: '重读《深度工作》第三章，双峰主义（把时间分成深度块和浅层块两大块）确实最适合我现在的节奏。打算下周开始每周二、周四整天设为深度日，其余时间处理协作。',
+      tags: ['深度工作', '双峰', '阅读'],
+      summary: '确定双峰主义适配自己节奏，规划每周两个深度日。',
+      daysAgo: 16,
+    },
+    {
+      type: 'note',
+      title: '账单整理：外卖超支 40%',
+      content: '整理了这个月的账单，外卖支出超预算 40%，主要是加班晚归点外卖。准备改成周末备餐、工作日带饭，既省钱又健康。这和加班问题其实是一根藤上的瓜。',
+      tags: ['理财', '预算', '带饭'],
+      summary: '外卖超支 40%，计划备餐带饭，与加班问题同源。',
+      daysAgo: 22,
+    },
+    {
+      type: 'note',
+      title: '睡眠不足损伤前额叶',
+      content: '看到一项研究：连续睡眠不足 6 小时，前额叶功能显著下降，决策和自控力都会受损。这解释了我最近加班后开会走神、容易冲动点外卖的原因。睡眠优先级必须提到最高。',
+      tags: ['睡眠', '认知', '研究'],
+      summary: '睡眠不足损伤前额叶功能，解释走神与冲动决策。',
+      daysAgo: 26,
+    },
+  ],
 };
 
 /* ---------------- 合并写入（复刻 applyGraphToSupabase） ---------------- */
@@ -1278,8 +1385,26 @@ async function applyGraph(graph, capturedId) {
       val: kindVal(node.kind),
       updated_at: new Date().toISOString(),
     };
-    const created = await rest('/knowledge_nodes?select=id', { method: 'POST', body: payload });
-    const createdRow = Array.isArray(created) ? created[0] : created;
+    // 并发竞态处理（2026-09-19）：多 worker 同时抽取到同名新节点时，
+    // 查缓存都未命中 → 双双 INSERT → scope_norm_uidx 409。冲突时回退查询并走合并路径。
+    let createdRow;
+    try {
+      const created = await rest('/knowledge_nodes?select=id', { method: 'POST', body: payload });
+      createdRow = Array.isArray(created) ? created[0] : created;
+    } catch (e) {
+      if (!String(e?.message || e).includes('409')) throw e;
+      const found = await rest(`/knowledge_nodes?scope_id=eq.${DEMO_SCOPE}&normalized_name=eq.${encodeURIComponent(payload.normalized_name)}&select=id,name,normalized_name,kind,aliases,source_captured_ids`);
+      const hitRow = Array.isArray(found) ? found[0] : found;
+      if (!hitRow) throw e;
+      const mergedCapturedIds = capturedId
+        ? uniqStrings([...(hitRow.source_captured_ids || []), capturedId])
+        : (hitRow.source_captured_ids || []);
+      await rest(`/knowledge_nodes?id=eq.${hitRow.id}`, {
+        method: 'PATCH',
+        body: { aliases: uniqStrings([...(hitRow.aliases || []), ...payload.aliases]), source_captured_ids: mergedCapturedIds, updated_at: new Date().toISOString() },
+      });
+      createdRow = hitRow;
+    }
     extractedIdToDbId.set(node.id, createdRow.id);
     changedNodeIds.add(createdRow.id);
     for (const n of norms) normToNode.set(n, { ...payload, id: createdRow.id });
@@ -1313,19 +1438,34 @@ async function applyGraph(graph, capturedId) {
       updatedLinks++;
       continue;
     }
-    await rest('/knowledge_links', {
-      method: 'POST',
-      body: {
-        source,
-        target,
-        relation_type: rel,
-        evidence_captured_ids: capturedId ? [capturedId] : [],
-        confidence: typeof link.confidence === 'number' ? link.confidence : null,
-        metadata: link.evidence ? { evidence: link.evidence } : {},
-        updated_at: new Date().toISOString(),
-      },
-    });
-    insertedLinks++;
+    // 并发竞态处理（2026-09-19）：同 source/target/relation 的边并发 INSERT → dedupe_uidx 409。
+    // 冲突时回退查询并合并 evidence。
+    try {
+      await rest('/knowledge_links', {
+        method: 'POST',
+        body: {
+          source,
+          target,
+          relation_type: rel,
+          evidence_captured_ids: capturedId ? [capturedId] : [],
+          confidence: typeof link.confidence === 'number' ? link.confidence : null,
+          metadata: link.evidence ? { evidence: link.evidence } : {},
+          updated_at: new Date().toISOString(),
+        },
+      });
+      insertedLinks++;
+    } catch (e) {
+      if (!String(e?.message || e).includes('409')) throw e;
+      const rows = await rest(`/knowledge_links?scope_id=eq.${DEMO_SCOPE}&source=eq.${source}&target=eq.${target}&relation_type=eq.${encodeURIComponent(rel)}&select=id,evidence_captured_ids`);
+      const row = Array.isArray(rows) ? rows[0] : rows;
+      if (row && capturedId) {
+        await rest(`/knowledge_links?id=eq.${row.id}`, {
+          method: 'PATCH',
+          body: { evidence_captured_ids: uniqStrings([...(row.evidence_captured_ids || []), capturedId]), updated_at: new Date().toISOString() },
+        });
+        updatedLinks++;
+      }
+    }
   }
 
   return { changedNodeIds, insertedLinks, updatedLinks };
