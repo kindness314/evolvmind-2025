@@ -38,12 +38,15 @@
 
 ## 数据页主题分组（2026-09-19，用户要求「数据按照主题进行整理显示」）
 - `DataPage.tsx`：**两级导航**——默认只列主题（名称+最新日期+条数），点击进入该主题的记录视图（返回「全部主题」）。用户明确：降低渲染压力+更整洁。
-  - 分组键 = 该条记录**全局频率最高的标签**（向大主题聚拢，避免碎组）；无标签进「未分组」排最后。
-  - 组内：置顶在前，其余按时间倒序；组间：按组内最新记录倒序。
-  - 搜索（关键词/语义）时保持平铺结果，不进分组视图。
-  - 卡片 JSX 抽为 `renderItem`；状态 `activeTag`（null=主题列表）。
-  - 踩坑：编辑后 Vite HMR 报 "does not provide an export named 'DataPage'"（陈旧转换缓存），重启 dev server 解决。
-- 浏览器验证：主题列表/进入详情/返回/搜索平铺均正常；typecheck/build/48 测试全过。
+- **分组键 = 图谱细主题（topic_labels），不是捕获 tags**（用户追问「和知识节点里的没匹配」「主题零碎又重合」）：
+  - 根因：两套分类——捕获 `tags` 是抽取时 LLM 自由打的（牛年/尝试/测试…，运动/健身重合），图谱走规范细主题（~59 类）。
+  - 链：`captured_info ← knowledge_nodes.source_captured_ids → topic_labels`；捕获有多节点时**主题投票**（排除「其他」，票多者胜）。
+  - `loadCapturedTopics`：分页拉 topic_labels + knowledge_nodes（PostgREST 1000 行上限，`range()` 循环），构建 capturedId→topic Map；无节点/仅「其他」→「未分组」。
+  - fetchData 成功后 `void loadCapturedTopics()`；映射未就绪显示「正在整理主题…」防全量卡片闪渲。
+  - 原始 tags 仍保留在卡片上展示，只不再作分组键。
+- 搜索（关键词/语义）保持平铺；卡片 JSX 抽 `renderItem`；状态 `activeTag`（null=主题列表）。
+- 踩坑：编辑后 Vite HMR 报 "does not provide an export named 'DataPage'"（陈旧转换缓存），重启 dev server 解决。
+- 浏览器验证：细主题列表（睡眠 15/专注力 16/育儿 11…）/进入/返回/未分组尾部/搜索平铺；typecheck/build/48 测试全过。
 
 ## 三项 UX 修复（2026-09-19 下午，用户反馈驱动）
 1. **推荐语改推荐导向**（semantic/graph_bridge/knowledge_node/knowledge_topic）：

@@ -425,6 +425,66 @@ export function DataPage({ onNavigate }: DataPageProps) {
   // 与 KnowledgePage 的列裁剪一致, 大幅降低列表页加载体积与耗时
   const CAPTURED_COLUMNS = 'id,type,title,content,summary,created_at,is_pinned,tags,note,processing_status,graph_status,embedding_status,processing_error,processed_at,storage_path,file_name,mime_type,file_size';
 
+  // 捕获→细主题映射（与知识网络同一套 topic_labels 分类，2026-09-19 用户指出两套分类不一致：
+  // 捕获 tags 是抽取时 LLM 自由打的，零碎又重合；图谱细主题是规范分类）
+  // 链: captured_info ← knowledge_nodes.source_captured_ids → topic_labels(细主题)
+  const [capturedTopicMap, setCapturedTopicMap] = useState<Map<string, string> | null>(null);
+  const loadCapturedTopics = useCallback(async () => {
+    try {
+      const isDemo = localStorage.getItem('demo_auth') === 'true';
+      let scopeId = '00000000-0000-0000-0000-000000000000';
+      if (!isDemo) {
+        const { data: ud } = await supabase.auth.getUser();
+        if (!ud?.user?.id) return;
+        scopeId = ud.user.id;
+      }
+      // 分页拉取（PostgREST 单页 1000 行上限，超出静默截断）
+      const PAGE = 1000;
+      const labels: Array<{ cluster_key: string; name: string }> = [];
+      const nodes: Array<{ id: string; source_captured_ids: string[] | null }> = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await supabase.from('topic_labels').select('cluster_key,name').eq('scope_id', scopeId).range(from, from + PAGE - 1);
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        labels.push(...(data as typeof labels));
+        if (data.length < PAGE) break;
+      }
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await supabase.from('knowledge_nodes').select('id,source_captured_ids').eq('scope_id', scopeId).range(from, from + PAGE - 1);
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        nodes.push(...(data as typeof nodes));
+        if (data.length < PAGE) break;
+      }
+      const topicOfNode = new Map<string, string>();
+      for (const l of labels) if (l.name) topicOfNode.set(l.cluster_key, l.name);
+      // 捕获 → 主题投票（排除「其他」，票多者胜；平票取先见）
+      const votes = new Map<string, Map<string, number>>();
+      for (const n of nodes) {
+        const topic = topicOfNode.get(n.id);
+        if (!topic || topic === '其他' || !Array.isArray(n.source_captured_ids)) continue;
+        for (const cid of n.source_captured_ids) {
+          if (!votes.has(cid)) votes.set(cid, new Map());
+          const v = votes.get(cid)!;
+          v.set(topic, (v.get(topic) || 0) + 1);
+        }
+      }
+      const m = new Map<string, string>();
+      for (const [cid, v] of votes) {
+        let best: string | null = null;
+        let bestCount = 0;
+        for (const [topic, c] of v) {
+          if (c > bestCount) { best = topic; bestCount = c; }
+        }
+        if (best) m.set(cid, best);
+      }
+      setCapturedTopicMap(m);
+    } catch (e) {
+      console.error('加载主题映射失败:', e);
+      setCapturedTopicMap(new Map()); // 失败不阻塞：全部进「未分组」
+    }
+  }, []);
+
   const fetchData = async (showLoading = true) => {
     if (showLoading) setLoading(true);
     // 15s 超时: 直连 supabase.co 可能长时间挂起, 不能让页面停在"正在加载数据..."
@@ -445,6 +505,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
         const formattedData: InfoCard[] = capturedInfo.map((item) => formatInfoRow(item, reconciled));
         setData(formattedData);
         void ensurePhotoUrls(formattedData);
+        void loadCapturedTopics();
         lastSyncRef.current = maxCreatedAt(capturedInfo);
         // 重建观察集: 全量快照中任一状态为非空且非 completed 的行进入观察, 供增量同步捕获"完成/失败瞬间"
         // (与增量查询 or(...neq.completed) 语义一致: neq 对 NULL 不生效, 存量 NULL 行是静态的, 无需观察)
@@ -554,23 +615,15 @@ export function DataPage({ onNavigate }: DataPageProps) {
       }))
     : filteredData;
 
-  // 按主题分组（2026-09-19 用户要求：数据按主题整理显示）
-  // 分组键 = 该条记录全局频率最高的标签（向大主题聚拢）；无标签进「未分组」排最后
+  // 按主题分组（与知识网络同一套细主题；2026-09-19 用户指出捕获 tags 零碎重合且与图谱不匹配）
+  // 键 = capturedTopicMap 投票胜出的细主题；无节点/仅「其他」→「未分组」排最后
   // 组内：置顶在前，其余按时间倒序；组间：按组内最新记录倒序。搜索时保持平铺结果
   const hasQuery = searchQuery.trim().length > 0;
   const tagGroups = useMemo(() => {
-    if (hasQuery || displayData.length === 0) return null;
-    const freq = new Map<string, number>();
-    for (const item of displayData) for (const t of item.tags || []) freq.set(t, (freq.get(t) || 0) + 1);
+    if (hasQuery || displayData.length === 0 || capturedTopicMap === null) return null;
     const groups = new Map<string, typeof displayData>();
     for (const item of displayData) {
-      let key: string | null = null;
-      let best = -1;
-      for (const t of item.tags || []) {
-        const f = freq.get(t) || 0;
-        if (f > best) { best = f; key = t; }
-      }
-      const k = key || '__ungrouped__';
+      const k = capturedTopicMap.get(item.id) || '__ungrouped__';
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k)!.push(item);
     }
@@ -584,7 +637,7 @@ export function DataPage({ onNavigate }: DataPageProps) {
     });
     arr.sort((a, b) => (a.key === '__ungrouped__' ? 1 : b.key === '__ungrouped__' ? -1 : b.latest - a.latest));
     return arr;
-  }, [displayData, hasQuery]);
+  }, [displayData, hasQuery, capturedTopicMap]);
   // 两级导航：null=主题列表视图；选中后进入该主题的记录视图（降低渲染压力+整洁）
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const activeGroup = activeTag && tagGroups ? tagGroups.find((g) => g.key === activeTag) || null : null;
@@ -851,7 +904,12 @@ export function DataPage({ onNavigate }: DataPageProps) {
             </button>
           </div>
         ) : displayData.length > 0 ? (
-          tagGroups ? (
+          !hasQuery && capturedTopicMap === null ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <Loader2 className="w-6 h-6 text-brand animate-spin mb-2" />
+              <p className="text-sm text-gray-400">正在整理主题...</p>
+            </div>
+          ) : tagGroups ? (
             activeGroup ? (
               /* 主题详情：该主题的记录卡片 */
               <div className="space-y-3">
