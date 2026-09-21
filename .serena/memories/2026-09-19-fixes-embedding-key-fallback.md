@@ -37,12 +37,13 @@
 - **仍未 push**（等用户明确要求推 origin + vercel 双远程）。
 
 ## 数据页主题分组（2026-09-19，用户要求「数据按照主题进行整理显示」）
-- `DataPage.tsx`：非搜索态按主题分组渲染。
+- `DataPage.tsx`：**两级导航**——默认只列主题（名称+最新日期+条数），点击进入该主题的记录视图（返回「全部主题」）。用户明确：降低渲染压力+更整洁。
   - 分组键 = 该条记录**全局频率最高的标签**（向大主题聚拢，避免碎组）；无标签进「未分组」排最后。
   - 组内：置顶在前，其余按时间倒序；组间：按组内最新记录倒序。
-  - 组头可折叠（collapsedTags state）；搜索（关键词/语义）时保持平铺结果。
-  - 卡片 JSX 抽为 `renderItem`，分组/平铺两布局共用。
-- 浏览器验证：「加班 14」组渲染、折叠/展开、搜索平铺均正常；typecheck/build/48 测试全过。
+  - 搜索（关键词/语义）时保持平铺结果，不进分组视图。
+  - 卡片 JSX 抽为 `renderItem`；状态 `activeTag`（null=主题列表）。
+  - 踩坑：编辑后 Vite HMR 报 "does not provide an export named 'DataPage'"（陈旧转换缓存），重启 dev server 解决。
+- 浏览器验证：主题列表/进入详情/返回/搜索平铺均正常；typecheck/build/48 测试全过。
 
 ## 三项 UX 修复（2026-09-19 下午，用户反馈驱动）
 1. **推荐语改推荐导向**（semantic/graph_bridge/knowledge_node/knowledge_topic）：

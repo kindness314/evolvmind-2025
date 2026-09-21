@@ -585,14 +585,9 @@ export function DataPage({ onNavigate }: DataPageProps) {
     arr.sort((a, b) => (a.key === '__ungrouped__' ? 1 : b.key === '__ungrouped__' ? -1 : b.latest - a.latest));
     return arr;
   }, [displayData, hasQuery]);
-  const [collapsedTags, setCollapsedTags] = useState<Set<string>>(new Set());
-  const toggleTagCollapse = (key: string) => {
-    setCollapsedTags((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
+  // 两级导航：null=主题列表视图；选中后进入该主题的记录视图（降低渲染压力+整洁）
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const activeGroup = activeTag && tagGroups ? tagGroups.find((g) => g.key === activeTag) || null : null;
 
   const handleBulkPin = async () => {
     if (selectedCount === 0 || isBulkActing) return;
@@ -857,30 +852,47 @@ export function DataPage({ onNavigate }: DataPageProps) {
           </div>
         ) : displayData.length > 0 ? (
           tagGroups ? (
-            /* 主题分组视图（非搜索态） */
-            <div className="space-y-4">
-              {tagGroups.map((g) => {
-                const collapsed = collapsedTags.has(g.key);
-                return (
-                  <div key={g.key}>
-                    <button
-                      onClick={() => toggleTagCollapse(g.key)}
-                      className="w-full flex items-center gap-1.5 px-1 py-1 text-left"
-                    >
-                      <Tag className="w-3.5 h-3.5 text-brand flex-none" />
-                      <span className="text-sm font-medium text-gray-800">{g.label}</span>
-                      <span className="text-xs text-gray-400">{g.items.length}</span>
-                      <ChevronDown className={`w-4 h-4 text-gray-400 ml-auto transition-transform ${collapsed ? '-rotate-90' : ''}`} />
-                    </button>
-                    {!collapsed && (
-                      <div className="space-y-3 mt-1.5">
-                        {g.items.map(renderItem)}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            activeGroup ? (
+              /* 主题详情：该主题的记录卡片 */
+              <div className="space-y-3">
+                <button
+                  onClick={() => setActiveTag(null)}
+                  className="flex items-center gap-1 px-1 py-1 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  <ChevronDown className="w-4 h-4 rotate-90" />
+                  全部主题
+                </button>
+                <div className="flex items-center gap-2 px-1">
+                  <Tag className="w-4 h-4 text-brand" />
+                  <span className="text-base font-medium text-gray-900">{activeGroup.label}</span>
+                  <span className="text-xs text-gray-400">{activeGroup.items.length} 条</span>
+                </div>
+                {activeGroup.items.map(renderItem)}
+              </div>
+            ) : (
+              /* 主题列表视图：只列主题，点击进入（2026-09-19 用户要求两级导航） */
+              <div className="space-y-2">
+                {tagGroups.map((g) => (
+                  <button
+                    key={g.key}
+                    onClick={() => setActiveTag(g.key)}
+                    className="w-full bg-card border border-gray-100 px-4 py-3 flex items-center gap-3 hover:border-brand-300 transition-all text-left rounded-xl shadow-card"
+                  >
+                    <div className="w-9 h-9 bg-brand-soft flex items-center justify-center flex-none rounded-xl">
+                      <Tag className="w-4 h-4 text-brand" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-900 truncate">{g.label}</div>
+                      {g.latest > 0 && (
+                        <div className="text-xs text-gray-400">最新 {new Date(g.latest).toLocaleDateString()}</div>
+                      )}
+                    </div>
+                    <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 flex-none rounded-full">{g.items.length}</span>
+                    <ChevronDown className="w-4 h-4 text-gray-300 -rotate-90 flex-none" />
+                  </button>
+                ))}
+              </div>
+            )
           ) : (
             /* 搜索结果：保持平铺 */
             <div className="space-y-3">
