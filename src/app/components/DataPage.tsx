@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, Plus, Loader2, FileText, Image as ImageIcon, Mic, File, Pin, CheckSquare, Trash2, Check, X, Sparkles, AlertTriangle, RefreshCw } from 'lucide-react';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { Search, Plus, Loader2, FileText, Image as ImageIcon, Mic, File, Pin, CheckSquare, Trash2, Check, X, Sparkles, AlertTriangle, RefreshCw, Tag, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { toast } from 'sonner';
 import { supabase } from '../../lib/supabase';
 import { semanticSearch, generateEmbeddingForRow, type SearchResult } from '../../lib/search';
@@ -554,6 +554,46 @@ export function DataPage({ onNavigate }: DataPageProps) {
       }))
     : filteredData;
 
+  // 按主题分组（2026-09-19 用户要求：数据按主题整理显示）
+  // 分组键 = 该条记录全局频率最高的标签（向大主题聚拢）；无标签进「未分组」排最后
+  // 组内：置顶在前，其余按时间倒序；组间：按组内最新记录倒序。搜索时保持平铺结果
+  const hasQuery = searchQuery.trim().length > 0;
+  const tagGroups = useMemo(() => {
+    if (hasQuery || displayData.length === 0) return null;
+    const freq = new Map<string, number>();
+    for (const item of displayData) for (const t of item.tags || []) freq.set(t, (freq.get(t) || 0) + 1);
+    const groups = new Map<string, typeof displayData>();
+    for (const item of displayData) {
+      let key: string | null = null;
+      let best = -1;
+      for (const t of item.tags || []) {
+        const f = freq.get(t) || 0;
+        if (f > best) { best = f; key = t; }
+      }
+      const k = key || '__ungrouped__';
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k)!.push(item);
+    }
+    const timeOf = (i: InfoCard) => {
+      const t = new Date(i.created_at_raw || i.timestamp).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
+    const arr = [...groups.entries()].map(([key, items]) => {
+      const sorted = [...items].sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned) || timeOf(b) - timeOf(a));
+      return { key, label: key === '__ungrouped__' ? '未分组' : key, items: sorted, latest: Math.max(...sorted.map(timeOf)) };
+    });
+    arr.sort((a, b) => (a.key === '__ungrouped__' ? 1 : b.key === '__ungrouped__' ? -1 : b.latest - a.latest));
+    return arr;
+  }, [displayData, hasQuery]);
+  const [collapsedTags, setCollapsedTags] = useState<Set<string>>(new Set());
+  const toggleTagCollapse = (key: string) => {
+    setCollapsedTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
   const handleBulkPin = async () => {
     if (selectedCount === 0 || isBulkActing) return;
     setIsBulkActing(true);
@@ -607,6 +647,87 @@ export function DataPage({ onNavigate }: DataPageProps) {
       setIsBulkActing(false);
     }
   };
+
+  // 单条记录卡片（平铺与分组两种布局共用）
+  const renderItem = (item: (typeof displayData)[number]) => (
+    <div
+      key={item.id}
+      onClick={() => {
+        if (isMultiSelect) {
+          toggleSelect(item.id);
+          return;
+        }
+        onNavigate?.('item-detail', item.id);
+      }}
+      className={`bg-card border ${item.is_pinned ? 'border-brand-200' : 'border-gray-100'} p-4 cursor-pointer hover:border-brand-300 transition-all overflow-hidden relative rounded-xl shadow-card`}
+    >
+      {item.is_pinned && (
+        <div className="absolute top-0 right-0 p-1 bg-brand rounded-bl-lg">
+          <Pin className="w-3 h-3 text-white fill-white" />
+        </div>
+      )}
+      <div className="flex items-start gap-3">
+        {isMultiSelect && (
+          <div className="flex-none pt-1">
+            <div
+              className={`w-5 h-5 border flex items-center justify-center ${selectedIds.has(item.id) ? 'bg-brand border-brand' : 'border-gray-300 bg-white'} rounded-md`}
+            >
+              {selectedIds.has(item.id) ? <Check className="w-3.5 h-3.5 text-white" /> : null}
+            </div>
+          </div>
+        )}
+        <div className="w-10 h-10 bg-gray-50 flex items-center justify-center flex-none rounded-xl">
+          {typeIcons[item.type as keyof typeof typeIcons]}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <h3 className="font-medium text-gray-900 truncate">{item.title}</h3>
+            <ProcessingBadge item={item} onRetry={handleRetry} />
+            {item.similarity != null && (
+              <span className="flex-none px-1.5 py-0.5 bg-ai-soft text-ai text-xs font-medium rounded-full">
+                {Math.round(item.similarity * 100)}%
+              </span>
+            )}
+          </div>
+
+          {item.matchedReason ? (
+            <p className="text-[11px] text-purple-500 mb-1 line-clamp-1">{item.matchedReason}</p>
+          ) : null}
+
+          {item.sourcePreviews && item.sourcePreviews.length > 0 ? (
+            <div className="mb-2 text-[11px] text-gray-400 space-y-0.5">
+              {item.sourcePreviews.slice(0, 2).map((preview, i) => (
+                <p key={i} className="line-clamp-1 italic">{preview}</p>
+              ))}
+            </div>
+          ) : null}
+
+          {/* 根据类型展示预览 */}
+          {item.type === 'photo' && (photoUrlMap[item.id] || item.content.startsWith('blob:') || item.content.startsWith('http')) && (
+            <div className="mb-2 rounded overflow-hidden border border-gray-100 max-h-32">
+              <img src={photoUrlMap[item.id] || item.content} alt="Preview" className="w-full h-auto object-cover" />
+            </div>
+          )}
+
+          <p className="text-sm text-gray-600 line-clamp-2 mb-2">
+            {TEXT_LIKE_TYPES.includes(item.type) ? item.content : `[${item.type === 'photo' ? '图片' : item.type === 'audio' ? '音频' : '文件'}] ${item.file_name || item.content.split('/').pop()?.split('?')[0]}`}
+          </p>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {item.tags.map((tag, idx) => (
+              <span
+                key={idx}
+                className="inline-block px-2 py-0.5 bg-gray-100 text-xs text-gray-600 rounded-full"
+              >
+                {tag}
+              </span>
+            ))}
+            <span className="text-xs text-gray-400 ml-auto">{item.timestamp}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="h-full flex flex-col bg-white relative">
@@ -735,87 +856,37 @@ export function DataPage({ onNavigate }: DataPageProps) {
             </button>
           </div>
         ) : displayData.length > 0 ? (
-          <div className="space-y-3">
-            {displayData.map((item) => (
-              <div
-                key={item.id}
-                onClick={() => {
-                  if (isMultiSelect) {
-                    toggleSelect(item.id);
-                    return;
-                  }
-                  onNavigate?.('item-detail', item.id);
-                }}
-                className={`bg-card border ${item.is_pinned ? 'border-brand-200' : 'border-gray-100'} p-4 cursor-pointer hover:border-brand-300 transition-all overflow-hidden relative rounded-xl shadow-card`}
-              >
-                {item.is_pinned && (
-                  <div className="absolute top-0 right-0 p-1 bg-brand rounded-bl-lg">
-                    <Pin className="w-3 h-3 text-white fill-white" />
-                  </div>
-                )}
-                <div className="flex items-start gap-3">
-                  {isMultiSelect && (
-                    <div className="flex-none pt-1">
-                      <div
-                        className={`w-5 h-5 border flex items-center justify-center ${selectedIds.has(item.id) ? 'bg-brand border-brand' : 'border-gray-300 bg-white'} rounded-md`}
-                      >
-                        {selectedIds.has(item.id) ? <Check className="w-3.5 h-3.5 text-white" /> : null}
-                      </div>
-                    </div>
-                  )}
-                  <div className="w-10 h-10 bg-gray-50 flex items-center justify-center flex-none rounded-xl">
-                    {typeIcons[item.type as keyof typeof typeIcons]}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <h3 className="font-medium text-gray-900 truncate">{item.title}</h3>
-                      <ProcessingBadge item={item} onRetry={handleRetry} />
-                      {item.similarity != null && (
-                        <span className="flex-none px-1.5 py-0.5 bg-ai-soft text-ai text-xs font-medium rounded-full">
-                          {Math.round(item.similarity * 100)}%
-                        </span>
-                      )}
-                    </div>
-
-                    {item.matchedReason ? (
-                      <p className="text-[11px] text-purple-500 mb-1 line-clamp-1">{item.matchedReason}</p>
-                    ) : null}
-
-                    {item.sourcePreviews && item.sourcePreviews.length > 0 ? (
-                      <div className="mb-2 text-[11px] text-gray-400 space-y-0.5">
-                        {item.sourcePreviews.slice(0, 2).map((preview, i) => (
-                          <p key={i} className="line-clamp-1 italic">{preview}</p>
-                        ))}
-                      </div>
-                    ) : null}
-                    
-                    {/* 根据类型展示预览 */}
-                    {item.type === 'photo' && (photoUrlMap[item.id] || item.content.startsWith('blob:') || item.content.startsWith('http')) && (
-                      <div className="mb-2 rounded overflow-hidden border border-gray-100 max-h-32">
-                        <img src={photoUrlMap[item.id] || item.content} alt="Preview" className="w-full h-auto object-cover" />
+          tagGroups ? (
+            /* 主题分组视图（非搜索态） */
+            <div className="space-y-4">
+              {tagGroups.map((g) => {
+                const collapsed = collapsedTags.has(g.key);
+                return (
+                  <div key={g.key}>
+                    <button
+                      onClick={() => toggleTagCollapse(g.key)}
+                      className="w-full flex items-center gap-1.5 px-1 py-1 text-left"
+                    >
+                      <Tag className="w-3.5 h-3.5 text-brand flex-none" />
+                      <span className="text-sm font-medium text-gray-800">{g.label}</span>
+                      <span className="text-xs text-gray-400">{g.items.length}</span>
+                      <ChevronDown className={`w-4 h-4 text-gray-400 ml-auto transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+                    </button>
+                    {!collapsed && (
+                      <div className="space-y-3 mt-1.5">
+                        {g.items.map(renderItem)}
                       </div>
                     )}
-                    
-                    <p className="text-sm text-gray-600 line-clamp-2 mb-2">
-                      {TEXT_LIKE_TYPES.includes(item.type) ? item.content : `[${item.type === 'photo' ? '图片' : item.type === 'audio' ? '音频' : '文件'}] ${item.file_name || item.content.split('/').pop()?.split('?')[0]}`}
-                    </p>
-                    
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {item.tags.map((tag, idx) => (
-                        <span
-                          key={idx}
-                          className="inline-block px-2 py-0.5 bg-gray-100 text-xs text-gray-600 rounded-full"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                      <span className="text-xs text-gray-400 ml-auto">{item.timestamp}</span>
-                    </div>
                   </div>
-                </div>
-              </div>
-            ))}
-          </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* 搜索结果：保持平铺 */
+            <div className="space-y-3">
+              {displayData.map(renderItem)}
+            </div>
+          )
         ) : (
           <div className="text-center py-12">
             <p className="text-sm text-gray-500">暂无数据</p>
