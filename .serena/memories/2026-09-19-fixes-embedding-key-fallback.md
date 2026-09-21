@@ -51,6 +51,8 @@
   - 修复 2：平票 tie-break 从「先见者胜」改为**节点积累（source_captured_ids 总数）更大者优先**。重排后「加班后晨跑实验」归运动健身（合理）。
   - 踩坑：本会话早前 eval/浏览器里用过的 supabase host `wocchwrvlhqwtvfwfbsa` 是**旧项目**（NXDOMAIN）；当前真实项目 `wocchwrvlhqdwtvfwfab`（以 `.env.local` 为准）；本机直连 supabase 需系统代理 127.0.0.1:7890，浏览器内 fetch 可用、bash/eval 直连失败。
   - 踩坑：编辑后 Vite HMR 报 "does not provide an export named 'DataPage'"（陈旧转换缓存），重启 dev server 解决。
+- **主题碎化排查**（用户：「主题生成是不是有些问题？」）：实测 71 主题中 15 个是**规定类别表之外**的非法名（专注障碍/番茄工作法/认知带宽/作息节律…全部单例）。根因：这批是 **topic_labels 表双用途残留**（cluster_key 既存 node_id 也存旧簇 hash），是粒度升级前的簇级缓存行；服务端写路径本来就校验 `valid.has(v)` 且非法兜底「其他」，不会新生成非法名。修法：删掉全部非法行（15）+ 孤儿行（5，labels 1065>nodes 1060 暴露），最终 **1060 节点 = 1060 标签、56 主题、单例仅元认知/宠物（均为表内合法类）**。KnowledgePage 加载时服务端全量替换缓存 map，被删行不会从 localStorage 复活；topicize 全量兜底仅在表全空时触发，清理无风暴风险。
+  - 遗留（表内近义对，未动，属分类表设计决策）：认知效率(22)vs 专注力(71)、预算(26)vs 消费观念(25)、笔记与整理(1)vs 知识管理(57)。
 - 浏览器验证：细主题列表（睡眠 15/专注力 16/育儿 11…）/进入/返回/未分组尾部/搜索平铺；typecheck/build/48 测试全过。
 
 ## 三项 UX 修复（2026-09-19 下午，用户反馈驱动）
