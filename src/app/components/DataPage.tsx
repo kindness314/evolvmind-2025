@@ -458,23 +458,28 @@ export function DataPage({ onNavigate }: DataPageProps) {
       }
       const topicOfNode = new Map<string, string>();
       for (const l of labels) if (l.name) topicOfNode.set(l.cluster_key, l.name);
-      // 捕获 → 主题投票（排除「其他」，票多者胜；平票取先见）
-      const votes = new Map<string, Map<string, number>>();
+      // 捕获 → 主题投票（排除「其他」；票多者胜，平票时取节点积累(source 数)更大的主题）
+      const votes = new Map<string, Map<string, { count: number; weight: number }>>();
       for (const n of nodes) {
         const topic = topicOfNode.get(n.id);
         if (!topic || topic === '其他' || !Array.isArray(n.source_captured_ids)) continue;
+        const w = Math.max(1, n.source_captured_ids.length);
         for (const cid of n.source_captured_ids) {
           if (!votes.has(cid)) votes.set(cid, new Map());
           const v = votes.get(cid)!;
-          v.set(topic, (v.get(topic) || 0) + 1);
+          const cur = v.get(topic) || { count: 0, weight: 0 };
+          v.set(topic, { count: cur.count + 1, weight: cur.weight + w });
         }
       }
       const m = new Map<string, string>();
       for (const [cid, v] of votes) {
         let best: string | null = null;
         let bestCount = 0;
-        for (const [topic, c] of v) {
-          if (c > bestCount) { best = topic; bestCount = c; }
+        let bestWeight = 0;
+        for (const [topic, s] of v) {
+          if (s.count > bestCount || (s.count === bestCount && s.weight > bestWeight)) {
+            best = topic; bestCount = s.count; bestWeight = s.weight;
+          }
         }
         if (best) m.set(cid, best);
       }

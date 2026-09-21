@@ -45,7 +45,12 @@
   - fetchData 成功后 `void loadCapturedTopics()`；映射未就绪显示「正在整理主题…」防全量卡片闪渲。
   - 原始 tags 仍保留在卡片上展示，只不再作分组键。
 - 搜索（关键词/语义）保持平铺；卡片 JSX 抽 `renderItem`；状态 `activeTag`（null=主题列表）。
-- 踩坑：编辑后 Vite HMR 报 "does not provide an export named 'DataPage'"（陈旧转换缓存），重启 dev server 解决。
+- **归组准确性追问**（用户：「节点里面的话题是有问题吗？还是一个数据对应节点多？」）：
+  - 实测答案：**一条记录关联 5-12 个节点、横跨多主题是主因**；多数票归组基本合理（睡眠银行 5/12 票）。边缘 case = 平票先见者胜 + 未分类节点票损（如「加班后晨跑实验」6 节点 1:1:1 平票，3 节点未分类）。
+  - 修复 1：34 个未分类 demo 节点调 `/api/graph/topicize` 补全（34/34 合理：通勤英语播客→学习方法、外卖超支→消费观念…）。**注意：种子脚本 seed-test-data.mjs 不入 topic_labels，新数据需补 topicize**。
+  - 修复 2：平票 tie-break 从「先见者胜」改为**节点积累（source_captured_ids 总数）更大者优先**。重排后「加班后晨跑实验」归运动健身（合理）。
+  - 踩坑：本会话早前 eval/浏览器里用过的 supabase host `wocchwrvlhqwtvfwfbsa` 是**旧项目**（NXDOMAIN）；当前真实项目 `wocchwrvlhqdwtvfwfab`（以 `.env.local` 为准）；本机直连 supabase 需系统代理 127.0.0.1:7890，浏览器内 fetch 可用、bash/eval 直连失败。
+  - 踩坑：编辑后 Vite HMR 报 "does not provide an export named 'DataPage'"（陈旧转换缓存），重启 dev server 解决。
 - 浏览器验证：细主题列表（睡眠 15/专注力 16/育儿 11…）/进入/返回/未分组尾部/搜索平铺；typecheck/build/48 测试全过。
 
 ## 三项 UX 修复（2026-09-19 下午，用户反馈驱动）
