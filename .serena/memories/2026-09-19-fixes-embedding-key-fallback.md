@@ -36,6 +36,17 @@
 - 本次提交把 08-14~09-03 遗留的 working tree 改动（HomePage 推荐依据折叠、3 个新记忆文件、08-18 任务目录、public/demo-*.html、IMPROVEMENT.md 等）与本次修复一并入库。
 - **仍未 push**（等用户明确要求推 origin + vercel 双远程）。
 
+## 三项 UX 修复（2026-09-19 下午，用户反馈驱动）
+1. **推荐语改推荐导向**（semantic/graph_bridge/knowledge_node/knowledge_topic）：
+   价值先行，去掉「相似度 68%/标签堆砌」指标式文案。如 semantic：「你分别记过 A 和 B，却从没把它们联系起来……把这两条连起来，你就多了一条自己验证过的见解」。
+2. **总结改版**（「这段时间你在忙什么」长叙事被用户嫌太长）：
+   - `api/summarize.ts` 确定性+LLM 两处响应新增 `newThemes`（direction='new'）与 `newNodes`（窗口内新建节点，cap 10），sparse/empty 降级路径复用 buildDeterministicResponse 自动带上；narrative 字段保留但前端不再渲染。
+   - `HomePage.tsx`：叙事卡替换为「本期新增」表格（类型/名称/备注）；「关注主题」条形图卡替换为「话题总结」分点（名称（N 条）：insight||detail）。
+3. **图谱连续跳转残留修复**（用户：先后点两个话题卡，旧节点页未关+话题列表未跟随）：
+   - 根因：`KnowledgePage` initialNodeId effect 只 `setDetailNodeId(null)`，未重置 drillSuperId/drillTopicId/searchQuery，keep-alive 下旧下钻状态残留。
+   - 修法：effect 里全量重置（detail+两级下钻+搜索）再 focusNode。浏览器验证：下钻 健康›中话题 状态点推荐卡 → 面板回总览 12 大话题、聚焦新节点。
+- 验证：typecheck/build/48 测试全过；浏览器实测总结新 UI、推荐新文案、跳转重置。
+
 ## 推荐改向：图搜索知识推荐（2026-09-19，用户验收方向变更）
 - **用户反馈**：推荐目标应是「知识」（图谱节点/小主题），不是「两条记录很像」；以近期话题为种子做图搜索。
 - **实现**（复用 P7 PPR 基建）：

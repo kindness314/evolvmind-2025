@@ -52,6 +52,10 @@ export interface SummaryResponse {
   }>;
   narrative?: string;
   themes: SummaryTheme[];
+  /** 本期新增主题（确定性，direction='new'） */
+  newThemes?: Array<{ name: string; recent: number }>;
+  /** 本期新增知识节点（窗口内 created_at） */
+  newNodes?: Array<{ name: string; kind: string }>;
   importantNodes: ImportantNode[];
   newConnections: NewConnection[];
   nextActions: string[];

@@ -1358,7 +1358,12 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
   useEffect(() => {
     if (!initialNodeId || loading) return;
     if (!graphData.nodes.some((node) => node.id === initialNodeId)) return;
+    // 从推荐/外部跳转定位节点：清掉旧视图状态，
+    // 避免上一次留下的节点详情面板、下钻话题列表残留（2026-09-19 用户反馈）
     setDetailNodeId(null);
+    setDrillTopicId(null);
+    setDrillSuperId(null);
+    setSearchQuery('');
     focusNode(initialNodeId);
   }, [focusNode, graphData.nodes, initialNodeId, loading]);
   /** 已归一化的视图标识：同一布局只归一化一次（引擎停止时），拖拽/手动缩放不被重复重置 */

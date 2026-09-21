@@ -387,19 +387,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       for (const pair of diversePairs) {
         const recId = `sem-${pair.a.id}-${pair.b.id}`;
-        const simPct = Math.round(pair.similarity * 100);
         const aTitle = pair.a.title || '未命名';
         const bTitle = pair.b.title || '未命名';
         const aAgo = daysAgoText(pair.a.created_at);
         const bAgo = daysAgoText(pair.b.created_at);
-        const aTags = (pair.a.tags || []).join('、') || '无标签';
-        const bTags = (pair.b.tags || []).join('、') || '无标签';
         candidates.push({
           item: {
             id: recId,
             type: 'semantic',
             title: `${aTitle} ↔ ${bTitle}`,
-            reason: `「${aTitle}」（${aAgo}，标签：${aTags}）与「${bTitle}」（${bAgo}，标签：${bTags}）词面完全不同，但语义相似度高达 ${simPct}%——两条记录谈的可能是同一件事的不同侧面`,
+            reason: `你分别记过「${aTitle}」（${aAgo}）和「${bTitle}」（${bAgo}），却从没把它们联系起来——但它们谈的可能是同一件事的两个侧面。把这两条连起来，你就多了一条自己验证过的见解`,
             action: `重读这两条，用一句话写下它们共同在说什么——这句话就是你这个主题的雏形`,
             targetType: 'captured',
             targetId: pair.a.id,
@@ -441,7 +438,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             id: recId,
             type: 'graph_bridge',
             title: `${bp.captureA.title} → ${bp.captureB.title}`,
-            reason: `你的图谱里存在一条传导链 ${chain}：「${bp.captureA.title}」落在链的一端，「${bp.captureB.title}」落在另一端——两条看起来无关的记录，其实被同一个中间主题串起来了`,
+            reason: `「${bp.captureA.title}」和「${bp.captureB.title}」看起来无关，但你的图谱里已经有一条链 ${chain} 把它们串起来了——补上中间缺失的细节，这条链就是你自己的因果分析`,
             action: bp.midNode
               ? `顺着「${bp.midNode.name}」这条链补一条中间记录（当时具体发生了什么）——链条就变成可追溯的因果线`
               : `「${bp.nodeA.name}」和「${bp.nodeB.name}」之间可能有你没想到的联系——花一分钟想想，有联系就补一条记录钉住它`,
@@ -650,7 +647,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               id: `ktopic-${topic}`,
               type: 'knowledge_topic',
               title: `主题「${topic}」`,
-              reason: `${hotClause}，而「${topic}」这一整块知识（${g.members.length} 个知识点，如 ${names}）${pathText}——这组知识点你最近都没碰过`,
+              reason: `${hotClause}——而「${topic}」这整块知识（${g.members.length} 个知识点，如 ${names}）${pathText}。这组知识点你最近都没碰过，但现在可能正是用得上的时候`,
               action: `进入「${topic}」主题挑一个最陌生的知识点重读——它和你最近思考的问题可能有化学反应`,
               targetType: 'node',
               targetId: rep.id,
@@ -677,7 +674,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               id: `knode-${node.id}`,
               type: 'knowledge_node',
               title: node.name,
-              reason: `${hotClause}，图谱里的「${node.name}」${pathText}——它关联了 ${srcCount} 条记录${updatedAgo ? `，最近整理是${updatedAgo}` : ''}，也许能给现在的思考提供素材`,
+              reason: `${hotClause}——图谱里的「${node.name}」${pathText}。它已经积累了 ${srcCount} 条记录${updatedAgo ? `，上次整理还是${updatedAgo}` : ''}：回看一眼，可能正好回答你现在想的问题`,
               action: `打开图谱看看「${node.name}」的邻居——给它补一条最近的进展，或写一句它和你当前问题的关系`,
               targetType: 'node',
               targetId: node.id,

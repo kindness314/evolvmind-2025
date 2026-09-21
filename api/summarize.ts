@@ -678,6 +678,12 @@ function buildDeterministicResponse(
     period,
     narrative: buildNarrative(agg, period, themeDirections, communityBlocks),
     themes,
+    // 本期新增（表格展示用，2026-09-19 用户要求替代长叙事）
+    newThemes: [...themeDirections.values()]
+      .filter((t) => t.direction === 'new')
+      .map((t) => ({ name: t.name, recent: t.recent }))
+      .slice(0, 10),
+    newNodes: agg.nodeList.slice(0, 10).map((n) => ({ name: n.name, kind: n.kind })),
     importantNodes,
     newConnections,
     nextActions,
@@ -1138,6 +1144,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           period,
           narrative: narrative || buildNarrative(agg, period, themeDirections, communityBlocks),
           themes: themes.slice(0, 5),
+          // 本期新增（表格展示用，确定性数据透传）
+          newThemes: [...themeDirections.values()]
+            .filter((t) => t.direction === 'new')
+            .map((t) => ({ name: t.name, recent: t.recent }))
+            .slice(0, 10),
+          newNodes: agg.nodeList.slice(0, 10).map((n) => ({ name: n.name, kind: n.kind })),
           importantNodes: importantNodes.slice(0, 5),
           newConnections: newConnections.slice(0, 5),
           themeTrends: pickThemeTrends(themeDirections),

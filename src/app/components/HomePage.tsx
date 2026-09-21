@@ -259,8 +259,8 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                 <span><span className="font-medium text-gray-700">{summary.stats.newLinkCount}</span> 个关系</span>
               </div>
 
-              {/* Narrative（叙事式总结） */}
-              {summary.narrative && (
+              {/* 本期新增（表格，替代原长叙事段落，2026-09-19 用户要求） */}
+              {((summary.newThemes && summary.newThemes.length > 0) || (summary.newNodes && summary.newNodes.length > 0)) && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -269,9 +269,33 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                 >
                   <h4 className="px-3 py-1.5 text-xs font-medium text-brand bg-brand-soft/60 border-b border-brand-100 flex items-center gap-1.5">
                     <CalendarRange className="w-3 h-3" />
-                    这段时间你在忙什么
+                    本期新增
                   </h4>
-                  <p className="px-3 py-2.5 text-sm text-gray-700 leading-relaxed">{summary.narrative}</p>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-gray-400 border-b border-gray-100">
+                        <th className="px-3 py-1.5 font-medium w-12">类型</th>
+                        <th className="px-1 py-1.5 font-medium">名称</th>
+                        <th className="px-3 py-1.5 font-medium text-right w-20">备注</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(summary.newThemes || []).map((t, i) => (
+                        <tr key={`theme-${i}`} className="border-b border-gray-50 last:border-0">
+                          <td className="px-3 py-1.5 text-emerald-600">主题</td>
+                          <td className="px-1 py-1.5 text-gray-700">{t.name}</td>
+                          <td className="px-3 py-1.5 text-right text-gray-400">新出现 ×{t.recent}</td>
+                        </tr>
+                      ))}
+                      {(summary.newNodes || []).map((n, i) => (
+                        <tr key={`node-${i}`} className="border-b border-gray-50 last:border-0">
+                          <td className="px-3 py-1.5 text-brand">节点</td>
+                          <td className="px-1 py-1.5 text-gray-700">{n.name}</td>
+                          <td className="px-3 py-1.5 text-right text-gray-400">{n.kind}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </motion.div>
               )}
 
@@ -327,39 +351,31 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
                 </div>
               )}
 
-              {/* Themes（卡片式） */}
+              {/* 话题分点总结（替代条形图卡片，2026-09-19 用户要求） */}
               {summary.themes.length > 0 && (
                 <div className="bg-card border border-gray-100 overflow-hidden rounded-xl shadow-card">
                   <h4 className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border-b border-gray-100">
-                    关注主题
+                    话题总结
                   </h4>
-                  <div className="px-3 py-2 space-y-2">
+                  <ul className="px-3 py-2 space-y-1.5 list-none">
                     {summary.themes.map((t, i) => {
-                      const maxCount = Math.max(...summary.themes.map((x) => x.count), 1);
-                      const barWidth = Math.round((t.count / maxCount) * 100);
                       const tMeta = trendMeta[t.direction || 'stable'] || trendMeta.stable;
+                      const text = t.insight || t.detail || '';
                       return (
-                        <div key={i} className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm text-gray-700 w-20 truncate flex-none">{t.name}</span>
-                            <div className="flex-1 h-2 bg-gray-100 overflow-hidden" style={{ borderRadius: '2px' }}>
-                              <div
-                                className="h-full bg-brand transition-all"
-                                style={{ width: `${barWidth}%`, borderRadius: '2px' }}
-                              />
-                            </div>
-                            <span className="text-xs text-gray-400 w-6 text-right flex-none">{t.count}</span>
+                        <li key={i} className="flex items-start gap-2 text-xs">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-brand flex-none" />
+                          <span className="text-gray-600 leading-relaxed">
+                            <span className="font-medium text-gray-800">{t.name}</span>
+                            <span className="text-gray-400">（{t.count} 条）</span>
                             {t.direction && t.direction !== 'stable' && (
-                              <span className={`flex-none ${tMeta.color}`}>{tMeta.icon}</span>
+                              <span className={`inline-flex items-center ml-1 ${tMeta.color}`}>{tMeta.icon}</span>
                             )}
-                          </div>
-                          {t.insight && (
-                            <p className="text-xs text-gray-500 leading-relaxed">{t.insight}</p>
-                          )}
-                        </div>
+                            {text && <span>：{text}</span>}
+                          </span>
+                        </li>
                       );
                     })}
-                  </div>
+                  </ul>
                 </div>
               )}
 
