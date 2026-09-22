@@ -160,13 +160,13 @@ function truncateLabel(label: string, maxLength: number) {
   return label.length > maxLength ? `${label.slice(0, maxLength)}…` : label;
 }
 
-/** 话题节点半径（px，canvas 尺度）：按成员数平方根缩放（2026-09 用户反馈尺寸差异不明显）。
- *  sqrt 曲线：3 成员 ≈12px、50 ≈18px、316 ≈31px，面积近似正比成员数，大小话题一眼可辨。 */
-const TOPIC_RADIUS_MIN = 12;
-const TOPIC_RADIUS_MAX = 34;
+/** 话题节点半径（px，canvas 尺度）：按成员数平方根缩放。
+ *  2026-09-23 用户反馈节点偏大重合：9-24px（3 成员 ≈9px、50 ≈14px、316 ≈24px）。 */
+const TOPIC_RADIUS_MIN = 9;
+const TOPIC_RADIUS_MAX = 24;
 function topicRadiusPx(memberCount: number | undefined): number {
   const members = memberCount && memberCount > 0 ? memberCount : 3;
-  return Math.max(TOPIC_RADIUS_MIN, Math.min(TOPIC_RADIUS_MAX, 10 + 24 * Math.sqrt(Math.min(members, 400) / 400)));
+  return Math.max(TOPIC_RADIUS_MIN, Math.min(TOPIC_RADIUS_MAX, 7 + 19 * Math.sqrt(Math.min(members, 400) / 400)));
 }
 
 /** 与 canvas 绘制一致的节点半径（graph 单位），供碰撞松弛/标签布局复用 */
@@ -180,29 +180,34 @@ function nodeRenderRadius(node: GraphNode): number {
 }
 
 
-/** #RRGGBB → rgba 字符串（非 6 位 hex 原样返回，供 canvas 填充/描边） */
-function hexToRgba(hex: string, alpha: number): string {
-  const m = hex.replace('#', '');
-  if (m.length !== 6) return hex;
-  const r = parseInt(m.slice(0, 2), 16);
-  const g = parseInt(m.slice(2, 4), 16);
-  const b = parseInt(m.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function hexagonPath(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number) {
-  ctx.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const angle = (Math.PI / 3) * i - Math.PI / 2;
-    const px = x + radius * Math.cos(angle);
-    const py = y + radius * Math.sin(angle);
-    if (i === 0) {
-      ctx.moveTo(px, py);
-    } else {
-      ctx.lineTo(px, py);
-    }
+/** 颜色变换：支持 #RRGGBB 与 hsl(h, s%, l%)（community.ts 主题色是 hsl 字符串）。
+ *  可调透明度/亮度/饱和度；hsl 路径直接改 L 值得浅色，比叠 alpha 更干净。 */
+function tintColor(color: string, opts: { alpha?: number; lightness?: number; saturation?: number }): string {
+  const hslMatch = color.match(/hsl\(\s*([\d.]+)[,\s]+([\d.]+)%?[,\s]+([\d.]+)%?\s*\)/);
+  if (hslMatch) {
+    const h = hslMatch[1];
+    const s = opts.saturation ?? Number(hslMatch[2]);
+    const l = opts.lightness ?? Number(hslMatch[3]);
+    const a = opts.alpha ?? 1;
+    return a >= 1 ? `hsl(${h}, ${s}%, ${l}%)` : `hsla(${h}, ${s}%, ${l}%, ${a})`;
   }
-  ctx.closePath();
+  const m = color.replace('#', '');
+  if (m.length === 6) {
+    let r = parseInt(m.slice(0, 2), 16);
+    let g = parseInt(m.slice(2, 4), 16);
+    let b = parseInt(m.slice(4, 6), 16);
+    if (opts.lightness !== undefined && opts.lightness !== 50) {
+      // hex 无法直接改亮度：>50 向白混合、<50 向黑收暗，近似 hsl 亮度调整
+      const t = opts.lightness > 50 ? Math.min(1, (opts.lightness - 50) / 55) : 0;
+      const d = opts.lightness < 50 ? Math.max(0, opts.lightness / 50) : 1;
+      r = Math.round(r * d + (255 - r) * t);
+      g = Math.round(g * d + (255 - g) * t);
+      b = Math.round(b * d + (255 - b) * t);
+    }
+    const a = opts.alpha ?? 1;
+    return a >= 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+  return color;
 }
 
 function buildAdjacencyMap(links: GraphLink[]) {
@@ -1585,6 +1590,58 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
     }
   };
 
+  // 连线颜色/宽度：抽成共享函数，供自定义 linkCanvasObject（端点收在圆周上，不穿圆心）复用
+  const linkStrokeColor = (link: GraphLink & { count?: number }): string => {
+    const source = linkEndpointId(link.source);
+    const target = linkEndpointId(link.target);
+    const isHighlight = matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId || source === detailNodeId || target === detailNodeId;
+    if (isHighlight) return 'rgba(37, 99, 235, 0.7)';
+    const isCrossTopicLink = drillTopicId !== null && (source.startsWith('topic:') || target.startsWith('topic:'));
+    if (isCrossTopicLink) return 'rgba(148, 163, 184, 0.42)';
+    const isOther = source.includes('topic:-1') || target.includes('topic:-1');
+    if (isOther) return 'rgba(148, 163, 184, 0.15)';
+    if (link.count && link.count > 1) return `rgba(100, 116, 139, ${Math.min(0.7, 0.25 + link.count * 0.06)})`;
+    const rel = (link.relation_type || 'related_to') as string;
+    const relColor: Record<string, string> = {
+      causes: 'rgba(239, 68, 68, 0.55)',
+      leads_to: 'rgba(239, 68, 68, 0.55)',
+      part_of: 'rgba(59, 130, 246, 0.5)',
+      supports: 'rgba(16, 185, 129, 0.5)',
+      contradicts: 'rgba(249, 115, 22, 0.52)',
+      depends_on: 'rgba(139, 92, 246, 0.5)',
+      related_to: 'rgba(148, 163, 184, 0.45)',
+    };
+    return relColor[rel] || 'rgba(148, 163, 184, 0.45)';
+  };
+  const linkStrokeWidth = (link: GraphLink & { count?: number }): number => {
+    const source = linkEndpointId(link.source);
+    const target = linkEndpointId(link.target);
+    const isHighlight = matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId || source === detailNodeId || target === detailNodeId;
+    if (link.count && link.count > 1) return Math.min(5, 1 + link.count * 0.55);
+    return isHighlight ? 2.4 : 1.4;
+  };
+  // 自定义连线：从源圆周到目标圆周（两端各收回节点半径+2px），不再穿圆心
+  const paintLinkEdgeToEdge = (link: GraphLink & { count?: number }, ctx: CanvasRenderingContext2D, globalScale: number) => {
+    const s = link.source as GraphNode;
+    const t = link.target as GraphNode;
+    if (typeof s?.x !== 'number' || typeof s.y !== 'number' || typeof t?.x !== 'number' || typeof t.y !== 'number') return;
+    const dx = t.x - s.x;
+    const dy = t.y - s.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) return;
+    const ux = dx / len;
+    const uy = dy / len;
+    const rs = nodeRenderRadius(s) + 2;
+    const rt = nodeRenderRadius(t) + 2;
+    if (rs + rt >= len) return; // 节点已相贴/重合，不画线
+    ctx.strokeStyle = linkStrokeColor(link);
+    ctx.lineWidth = linkStrokeWidth(link) / globalScale;
+    ctx.beginPath();
+    ctx.moveTo(s.x + ux * rs, s.y + uy * rs);
+    ctx.lineTo(t.x - ux * rt, t.y - uy * rt);
+    ctx.stroke();
+  };
+
   return (
     <div className="h-full min-h-0 flex flex-col overflow-hidden bg-white">
       <div className="flex-none px-4 py-3 border-b border-gray-200">
@@ -1817,10 +1874,11 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
 
             ctx.beginPath();
             ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
-            ctx.fillStyle = isTopic ? '#ffffff' : hexToRgba(baseCol, 0.1);
+            // 同色系浅色填充（hsl 提亮到 94-95%，不是叠 alpha，干净不发灰）
+            ctx.fillStyle = tintColor(baseCol, { lightness: isTopic ? 95 : 93 });
             ctx.fill();
             ctx.lineWidth = (isCenter ? 2.5 : isTopic ? 1.8 : 1.2) / globalScale;
-            ctx.strokeStyle = isFocused ? '#FBBF24' : isSelected ? '#2563EB' : isNew && timeRange !== 'all' ? '#A855F7' : hexToRgba(baseCol, isTopic ? 0.9 : 0.6);
+            ctx.strokeStyle = isFocused ? '#FBBF24' : isSelected ? '#2563EB' : isNew && timeRange !== 'all' ? '#A855F7' : tintColor(baseCol, { alpha: isTopic ? 0.9 : 0.6 });
             ctx.stroke();
 
             // 话题大节点：名称画在节点内（白字，按宽度截断），成员数放右上角小徽标。
@@ -1859,13 +1917,14 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
                   ctx.font = `600 ${nameFont}px Inter, sans-serif`;
                   ctx.textAlign = 'center';
                   ctx.textBaseline = 'middle';
-                  ctx.fillStyle = '#1F2937';
+                  // 同色相深色文字（比灰色更有色彩归属，比白字更干净）
+                  ctx.fillStyle = tintColor(baseCol, { lightness: 30, saturation: 45 });
                   lines.forEach((ln, i) => {
                     ctx.fillText(ln, node.x!, y0 + i * lh);
                   });
-                  // 成员数：名称下方小号主题色，取代右上角徽标
+                  // 成员数：名称下方小号同色系中色
                   ctx.font = `500 ${countFont}px Inter, sans-serif`;
-                  ctx.fillStyle = hexToRgba(baseCol, 0.85);
+                  ctx.fillStyle = tintColor(baseCol, { lightness: 50 });
                   ctx.fillText(String(memberCount), node.x!, y0 + lines.length * lh + countFont * 0.2);
                 }
               }
@@ -1885,7 +1944,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
                 ctx.font = `600 ${fontSize}px Inter, sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillStyle = '#1F2937';
+                ctx.fillStyle = tintColor(baseCol, { lightness: 32, saturation: 45 });
                 ctx.fillText(label, node.x, node.y);
               }
             }
@@ -1900,52 +1959,16 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
             }
           }}
           nodePointerAreaPaint={(node, color: string, ctx: CanvasRenderingContext2D) => {
-            const isTopic = node.isTopic === true;
-            const baseRadius = isTopic
-              ? Math.max(14, Math.min(30, 8 + Math.sqrt(node.val || 10) * 2.2))
-              : Math.max(5, Math.min(10, 4 + Math.sqrt(node.val || 6) * 1.5));
             if (typeof node.x !== 'number' || typeof node.y !== 'number') return;
             ctx.fillStyle = color;
-            hexagonPath(ctx, node.x, node.y, Math.max(9, baseRadius * 1.4));
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, Math.max(9, nodeRenderRadius(node) * 1.35), 0, Math.PI * 2);
             ctx.fill();
           }}
-          linkColor={(link: GraphLink & { count?: number }) => {
-            const source = linkEndpointId(link.source);
-            const target = linkEndpointId(link.target);
-            const isHighlight = matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId || source === detailNodeId || target === detailNodeId;
-            // 高亮：聚焦/选中相关边用蓝色清晰显示
-            if (isHighlight) return 'rgba(37, 99, 235, 0.7)';
-            // 下钻2 时，连到"邻居话题节点"（topic: 端点）的跨话题边略淡（但清晰可读），突出本话题内部连线
-            const isCrossTopicLink = drillTopicId !== null && (source.startsWith('topic:') || target.startsWith('topic:'));
-            if (isCrossTopicLink) return 'rgba(148, 163, 184, 0.42)';
-            // 其他知识桶（杂散节点汇聚）：边更淡，降低视觉噪声
-            const isOther = source.includes('topic:-1') || target.includes('topic:-1');
-            if (isOther) return 'rgba(148, 163, 184, 0.15)';
-            // 聚合话题边：透明度随关联强度递增（弱边近乎不可见，强边清晰）
-            if (link.count && link.count > 1) return `rgba(100, 116, 139, ${Math.min(0.7, 0.25 + link.count * 0.06)})`;
-            // 非高亮：按关系类型语义着色，统一适中的饱和度透明度（清晰可见但不抢眼）
-            const rel = (link.relation_type || 'related_to') as string;
-            const relColor: Record<string, string> = {
-              causes: 'rgba(239, 68, 68, 0.55)',
-              leads_to: 'rgba(239, 68, 68, 0.55)',
-              part_of: 'rgba(59, 130, 246, 0.5)',
-              supports: 'rgba(16, 185, 129, 0.5)',
-              contradicts: 'rgba(249, 115, 22, 0.52)',
-              depends_on: 'rgba(139, 92, 246, 0.5)',
-              related_to: 'rgba(148, 163, 184, 0.45)',
-            };
-            return relColor[rel] || 'rgba(148, 163, 184, 0.45)';
-          }}
+          linkCanvasObject={paintLinkEdgeToEdge}
+          linkCanvasObjectMode={() => 'replace'}
           onEngineStop={handleEngineStop}
           onLinkHover={(link: GraphLink | null) => setHoveredLink(link)}
-          linkWidth={(link: GraphLink & { count?: number }) => {
-            const source = linkEndpointId(link.source);
-            const target = linkEndpointId(link.target);
-            const isHighlight = matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId || source === detailNodeId || target === detailNodeId;
-            // 聚合话题边：宽度随跨话题链接数加权
-            if (link.count && link.count > 1) return Math.min(5, 1 + link.count * 0.55);
-            return isHighlight ? 2.4 : 1.4;
-          }}
           linkDirectionalParticles={(link: GraphLink) => {
             // 因果类关系加流动粒子，表达方向感；仅高亮时显示避免噪点
             const rel = link.relation_type || '';
