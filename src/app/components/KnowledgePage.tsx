@@ -1138,25 +1138,44 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
     const fg = fgRef.current;
     const vp = computeUsableViewport();
     if (!fg || !vp) return;
-    // 下钻2 时只适配"本话题成员"（非 topic）的 bbox，排除弱化的邻居话题节点，让成员铺满画布
-    const memberFilter = drillTopicId !== null ? (node: GraphNode) => !node.isTopic : undefined;
-    const allBbox = fg.getGraphBbox(memberFilter as never);
-    if (!allBbox || allBbox.x[0] === undefined) return;
+    // 下钻2 只看本话题成员（非 topic），排除弱化的邻居话题节点
+    let nodes = displayGraphData.nodes.filter((n) => typeof n.x === 'number' && typeof n.y === 'number');
+    if (drillTopicId !== null) nodes = nodes.filter((n) => !n.isTopic);
+    if (nodes.length === 0) return;
+    // 主体拟合（2026-09-23）：离群散点（弱化/游离节点）会把 bbox 拉得很大，主群体缩成小点看不清。
+    // 取质心距离 85 分位内的节点作为"主体"计算 bbox，离群点允许在视口外（可拖动查看）。
+    if (nodes.length > 6) {
+      const cx0 = nodes.reduce((s, n) => s + (n.x as number), 0) / nodes.length;
+      const cy0 = nodes.reduce((s, n) => s + (n.y as number), 0) / nodes.length;
+      const dists = nodes
+        .map((n) => Math.hypot((n.x as number) - cx0, (n.y as number) - cy0))
+        .sort((a, b) => a - b);
+      const q85 = dists[Math.floor((dists.length - 1) * 0.85)];
+      const core = nodes.filter((n) => Math.hypot((n.x as number) - cx0, (n.y as number) - cy0) <= q85);
+      if (core.length >= Math.max(3, Math.floor(nodes.length * 0.5))) nodes = core;
+    }
+    // bbox 外扩节点半径，大节点不被裁边
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    nodes.forEach((n) => {
+      const r = nodeRenderRadius(n);
+      x0 = Math.min(x0, (n.x as number) - r); x1 = Math.max(x1, (n.x as number) + r);
+      y0 = Math.min(y0, (n.y as number) - r); y1 = Math.max(y1, (n.y as number) + r);
+    });
     const { left, top, gw, gh, uw, uh } = vp;
-    const spanX = Math.max(48, allBbox.x[1] - allBbox.x[0]);
-    const spanY = Math.max(48, allBbox.y[1] - allBbox.y[0]);
+    const spanX = Math.max(48, x1 - x0);
+    const spanY = Math.max(48, y1 - y0);
     const padding = Math.min(64, Math.max(28, Math.min(uw, uh) * 0.1));
     // zoomToFit 同款 clamp：极小图放大到 2.5 上限，极大图缩到 0.05
     let fitScale = Math.min((uw - padding * 2) / spanX, (uh - padding * 2) / spanY);
     fitScale = Math.max(0.02, Math.min(2.5, fitScale));
     if (displayGraphData.nodes.length <= 2) fitScale = Math.min(fitScale, 1.8);
-    const cx = (allBbox.x[0] + allBbox.x[1]) / 2;
-    const cy = (allBbox.y[0] + allBbox.y[1]) / 2;
+    const cx = (x0 + x1) / 2;
+    const cy = (y0 + y1) / 2;
     const ux = left + uw / 2;
     const uy = top + uh / 2;
     fg.zoom(fitScale, 0);
     fg.centerAt((gw / 2 - ux) / fitScale + cx, (gh / 2 - uy) / fitScale + cy, 0);
-  }, [computeUsableViewport, displayGraphData.nodes.length]);
+  }, [computeUsableViewport, displayGraphData, drillTopicId]);
 
   const handleFitView = useCallback(() => {
     fitAllNodes();
