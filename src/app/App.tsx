@@ -156,7 +156,7 @@ export default function App() {
 
 
   return (
-    <div className={`h-screen flex flex-col bg-white max-w-md mx-auto relative ${currentPage === 'knowledge' ? 'md:max-w-4xl' : ''}`}>
+    <div className={`h-screen flex flex-col bg-white max-w-md mx-auto relative ${currentPage === 'knowledge' ? 'sm:max-w-4xl' : ''}`}>
       {/* 主内容区 */}
       <main className="flex-1 overflow-hidden relative">
         {/* keep-alive: 页面首次访问挂载后常驻, 切换只改可见性, 不重新请求数据 */}
