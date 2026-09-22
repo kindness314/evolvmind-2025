@@ -180,6 +180,16 @@ function nodeRenderRadius(node: GraphNode): number {
 }
 
 
+/** #RRGGBB → rgba 字符串（非 6 位 hex 原样返回，供 canvas 填充/描边） */
+function hexToRgba(hex: string, alpha: number): string {
+  const m = hex.replace('#', '');
+  if (m.length !== 6) return hex;
+  const r = parseInt(m.slice(0, 2), 16);
+  const g = parseInt(m.slice(2, 4), 16);
+  const b = parseInt(m.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function hexagonPath(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number) {
   ctx.beginPath();
   for (let i = 0; i < 6; i++) {
@@ -1786,42 +1796,31 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
             const isTopic = node.isTopic === true;
             const isDimmed = node.isDimmed === true;
             const isCrossTopic = node.isCrossTopic === true;
-            // 话题大节点：较大六边形 + 社区色 + 成员数徽标；成员节点：社区色小六边形
-            // 跨话题节点（isCrossTopic）：保留主题色但半透明（比 isDimmed 灰色更可读），小一点
-            const nodeColor = isMatched
+            // 简洁风格（2026-09-23 用户反馈实心血章不好看）：圆形 + 极浅色填充 + 主题色描边 + 深色文字。
+            // 无阴影、无右上角徽标；成员数缩小字跟在名称下方。
+            const baseCol = isMatched
               ? '#7C3AED'
-              : isCrossTopic
-                ? 'rgba(148, 163, 184, 0.4)'
-                : isDimmed
-                  ? 'rgba(148, 163, 184, 0.55)'
-                  : isTopic
-                    ? node.color
-                    : node.color;
-            // 话题大节点：半径按成员数对数缩放（nodeRenderRadius，10-24px）
+              : isCrossTopic || isDimmed
+                ? '#94A3B8'
+                : node.color || '#94A3B8';
             const baseRadius = nodeRenderRadius(node);
             const radius = baseRadius * (isCenter ? 1.15 : isMatched ? 1.1 : 1) * (isCrossTopic ? 0.88 : isDimmed ? 0.75 : 1);
 
             // 新增节点外圈紫色光环（仅成员节点）
             if (isNew && timeRange !== 'all' && !isCenter && !isMatched && !isTopic) {
-              ctx.shadowColor = 'rgba(168, 85, 247, 0.35)';
-              ctx.shadowBlur = 10 / globalScale;
-              hexagonPath(ctx, node.x, node.y, radius + 2 / globalScale);
+              ctx.beginPath();
+              ctx.arc(node.x, node.y, radius + 2 / globalScale, 0, Math.PI * 2);
               ctx.strokeStyle = 'rgba(168, 85, 247, 0.5)';
               ctx.lineWidth = 1.5 / globalScale;
               ctx.stroke();
-              ctx.shadowBlur = 0;
             }
 
-            ctx.shadowColor = isCenter ? 'rgba(37, 99, 235, 0.4)' : isTopic ? 'rgba(15, 23, 42, 0.2)' : 'rgba(15, 23, 42, 0.15)';
-            ctx.shadowBlur = (isCenter ? 12 : isTopic ? 9 : 6) / globalScale;
-            hexagonPath(ctx, node.x, node.y, radius);
-            ctx.fillStyle = nodeColor;
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = isTopic ? '#ffffff' : hexToRgba(baseCol, 0.1);
             ctx.fill();
-            ctx.shadowBlur = 0;
-
-            ctx.lineWidth = (isCenter ? 2.5 : isTopic ? 2 : isNew ? 1.8 : 1.2) / globalScale;
-            ctx.strokeStyle = isFocused ? '#FBBF24' : isSelected ? '#2563EB' : isNew && timeRange !== 'all' ? '#A855F7' : 'rgba(255, 255, 255, 0.95)';
-            hexagonPath(ctx, node.x, node.y, radius);
+            ctx.lineWidth = (isCenter ? 2.5 : isTopic ? 1.8 : 1.2) / globalScale;
+            ctx.strokeStyle = isFocused ? '#FBBF24' : isSelected ? '#2563EB' : isNew && timeRange !== 'all' ? '#A855F7' : hexToRgba(baseCol, isTopic ? 0.9 : 0.6);
             ctx.stroke();
 
             // 话题大节点：名称画在节点内（白字，按宽度截断），成员数放右上角小徽标。
@@ -1853,36 +1852,22 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
                   }
                 }
                 if (nameFont * globalScale >= 5.5) {
+                  const countFont = Math.max(5.5 / globalScale, radius * 0.26);
+                  const lh = nameFont * 1.12;
+                  const blockH = lines.length * lh + countFont * 1.3;
+                  const y0 = node.y - blockH / 2 + lh / 2;
                   ctx.font = `600 ${nameFont}px Inter, sans-serif`;
                   ctx.textAlign = 'center';
                   ctx.textBaseline = 'middle';
-                  ctx.lineWidth = 2.5 / globalScale;
-                  ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
-                  const lh = nameFont * 1.12;
-                  const y0 = node.y - ((lines.length - 1) * lh) / 2;
+                  ctx.fillStyle = '#1F2937';
                   lines.forEach((ln, i) => {
-                    ctx.strokeText(ln, node.x!, y0 + i * lh);
-                    ctx.fillStyle = '#ffffff';
                     ctx.fillText(ln, node.x!, y0 + i * lh);
                   });
+                  // 成员数：名称下方小号主题色，取代右上角徽标
+                  ctx.font = `500 ${countFont}px Inter, sans-serif`;
+                  ctx.fillStyle = hexToRgba(baseCol, 0.85);
+                  ctx.fillText(String(memberCount), node.x!, y0 + lines.length * lh + countFont * 0.2);
                 }
-                // 右上角成员数徽标（小圆 + 数字；"其他知识"桶不显示）
-                const badgeR = Math.max(4.2, Math.min(6.5, radius * 0.3));
-                const badgeX = node.x + radius * 0.72;
-                const badgeY = node.y - radius * 0.72;
-                ctx.beginPath();
-                ctx.arc(badgeX, badgeY, badgeR, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
-                ctx.fill();
-                ctx.lineWidth = 1.2 / globalScale;
-                ctx.strokeStyle = 'rgba(15, 23, 42, 0.25)';
-                ctx.stroke();
-                const badgeFont = Math.max(5.5 / globalScale, badgeR * 1.1);
-                ctx.font = `700 ${badgeFont}px Inter, sans-serif`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillStyle = '#334155';
-                ctx.fillText(String(memberCount), badgeX, badgeY);
               }
             } else {
               // 成员节点：六边形内动态文字。完整名优先，字号自适应；过小才截断
@@ -1900,7 +1885,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
                 ctx.font = `600 ${fontSize}px Inter, sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillStyle = '#ffffff';
+                ctx.fillStyle = '#1F2937';
                 ctx.fillText(label, node.x, node.y);
               }
             }
