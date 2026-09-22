@@ -12,6 +12,7 @@ import { buildHierarchicalGraph, buildSemanticHierarchy, type SuperTopic, type T
 import { loadNodeTopicCache, saveNodeTopicCache, type NodeTopicMap } from '../../lib/nodeTopics';
 import { clusteredTopicLayout } from '../../lib/topicLayout';
 import { fetchSummary } from '../../lib/summarize';
+import { fetchRecommendations, type Recommendation } from '../../lib/recommend';
 interface GraphNode {
   id: string;
   name: string;
@@ -159,14 +160,13 @@ function truncateLabel(label: string, maxLength: number) {
   return label.length > maxLength ? `${label.slice(0, maxLength)}…` : label;
 }
 
-/** 话题节点半径（px，canvas 尺度）：按成员数对数缩放。
- *  曲线刻意压平（11 + 8·log2，封顶 21px）：3 成员 ≈14px、81 成员 ≈21px，
- *  避免巨型话题（如 81 成员的社区）视觉上压倒多数小话题。 */
+/** 话题节点半径（px，canvas 尺度）：按成员数平方根缩放（2026-09 用户反馈尺寸差异不明显）。
+ *  sqrt 曲线：3 成员 ≈12px、50 ≈18px、316 ≈31px，面积近似正比成员数，大小话题一眼可辨。 */
 const TOPIC_RADIUS_MIN = 12;
-const TOPIC_RADIUS_MAX = 21;
+const TOPIC_RADIUS_MAX = 34;
 function topicRadiusPx(memberCount: number | undefined): number {
   const members = memberCount && memberCount > 0 ? memberCount : 3;
-  return Math.max(TOPIC_RADIUS_MIN, Math.min(TOPIC_RADIUS_MAX, 11 + 8 * (Math.log2(members + 1) / Math.log2(45))));
+  return Math.max(TOPIC_RADIUS_MIN, Math.min(TOPIC_RADIUS_MAX, 10 + 24 * Math.sqrt(Math.min(members, 400) / 400)));
 }
 
 /** 与 canvas 绘制一致的节点半径（graph 单位），供碰撞松弛/标签布局复用 */
@@ -337,6 +337,8 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
   }, [topicScope, graphData.nodes.length]);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [timeRange, setTimeRange] = useState<'all' | '7d' | '30d'>('all');
+  // 意外关联（PPR 图桥推荐）：总览层顶部卡片，展示列表/时间线给不了的跨话题传导链
+  const [bridgeInsights, setBridgeInsights] = useState<Recommendation[]>([]);
   /** 下钻层级：当前钻入的话题 id（null=话题总览层） */
   const [drillTopicId, setDrillTopicId] = useState<number | null>(null);
   /** 下钻层级：当前钻入的大话题 id（null=总览大话题层） */
@@ -822,7 +824,9 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
         }
       } else {
         // ---- 总览层：大话题大节点 + 跨大话题聚合边（按关联度聚类，非固定环序） ----
-        const supers = communityAnalysis.superTopics;
+        // 「其他」桶不参与总览展示：无语义的杂散汇聚，灰色节点用户看不懂（2026-09 用户反馈）
+        const supers = communityAnalysis.superTopics.filter((sup) => !sup.isOther);
+        const visibleSuperIds = new Set(supers.map((s) => s.id));
         supers.forEach((sup) => {
           aggNodes.push({
             id: `topic:${sup.id}`,
@@ -843,13 +847,33 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
           if (!timeNodeIds.has(s) || !timeNodeIds.has(t)) continue;
           const ss = communityAnalysis.nodeToSuper.get(s);
           const ts = communityAnalysis.nodeToSuper.get(t);
-          const sEnd = ss !== undefined ? `topic:${ss}` : s;
-          const tEnd = ts !== undefined ? `topic:${ts}` : t;
-          pushAggLink(sEnd, tEnd, link);
+          if (ss === undefined || ts === undefined) continue;
+          if (!visibleSuperIds.has(ss) || !visibleSuperIds.has(ts)) continue;
+          pushAggLink(`topic:${ss}`, `topic:${ts}`, link);
         }
       }
 
       // 话题大节点大小 = 成员数 + 跨话题度
+      // 总览/下钻1 边过滤：只保留强关联边，避免话题节点两两全连接成蛛网（2026-09 用户反馈不直观）
+      if (drillTopicId === null && aggLinks.length > aggNodes.length * 2) {
+        const sorted = [...aggLinks].sort((a, b) => (b.count || 1) - (a.count || 1));
+        const keepCount = Math.max(aggNodes.length, Math.round(aggNodes.length * 1.6));
+        const kept = sorted.slice(0, keepCount);
+        const connected = new Set<string>();
+        for (const l of kept) { connected.add(l.source); connected.add(l.target); }
+        for (const l of sorted.slice(keepCount)) {
+          const s = linkEndpointId(l.source);
+          const t = linkEndpointId(l.target);
+          if (!connected.has(s) || !connected.has(t)) {
+            kept.push(l);
+            connected.add(s);
+            connected.add(t);
+          }
+        }
+        aggLinks.length = 0;
+        aggLinks.push(...kept);
+      }
+
       const crossDegree = new Map<string, number>();
       aggLinks.forEach((link) => {
         crossDegree.set(link.source, (crossDegree.get(link.source) || 0) + 1);
@@ -1154,6 +1178,16 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
     setFocusedNodeId(null);
     setSelectedNodeIds([]);
     setDetailNodeId(null);
+  }, []);
+
+  // 加载一次推荐，取 graph_bridge 类型作为「意外关联」卡片（静默失败，不影响图谱）
+  useEffect(() => {
+    let cancelled = false;
+    fetchRecommendations({}).then((r) => {
+      if (cancelled || !r.ok) return;
+      setBridgeInsights(r.recommendations.filter((x) => x.type === 'graph_bridge').slice(0, 3));
+    }).catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   /** 返回：逐级上溯（中话题 → 大话题 → 总览） */
@@ -1699,6 +1733,21 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
         ) : null}
 
 
+        {/* 意外关联卡片：仅总览层展示（PPR 图桥发现的跨话题传导链） */}
+        {drillSuperId === null && drillTopicId === null && !loading && bridgeInsights.length > 0 ? (
+          <div className="absolute top-3 right-4 z-10 w-[280px] bg-white/95 backdrop-blur border border-indigo-100 shadow-card rounded-2xl px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-indigo-600 mb-1.5">
+              <Sparkles className="w-3.5 h-3.5" /> 意外关联 · 记录之间的隐藏链
+            </div>
+            {bridgeInsights.map((b) => (
+              <div key={b.id} className="mb-2 last:mb-0">
+                <div className="text-xs font-medium text-gray-800 leading-snug">{b.title}</div>
+                <div className="text-[11px] text-gray-500 leading-snug line-clamp-2 mt-0.5">{b.reason}</div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         {(drillSuperId !== null || drillTopicId !== null) ? (
           <div className="absolute top-3 right-4 z-10 flex flex-wrap items-center gap-x-1.5 gap-y-1 bg-white/95 backdrop-blur border border-gray-200 px-3 py-1.5 shadow-card rounded-2xl max-w-[calc(100%-2rem)]">            <button onClick={drillBack} className="text-[11px] text-gray-500 hover:text-indigo-600 font-medium whitespace-nowrap">
               {drillTopicId !== null ? '中话题' : '总览'}
@@ -1782,17 +1831,26 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
               const memberCount = node.memberCount ?? (topicInfo ? topicInfo.memberIds.length : (node.val || 0));
               if (!isDimmed) {
                 // 节点内：名称（白描边保证可读）。完整名优先，字号自适应调小；
-                // 只有字号过小（不可读）才按六边形宽度截断。
+                // 长名放两行（如「工作节奏与加班」3+3），超过两行容量才截断。
                 const innerWidth = radius * 1.55;
                 // 模型命名优先（与左侧话题栏同步）：canvas 绘制时读实时 topicNameMap（displayGraphData 不随命名重算）
                 const topicName = node.communityId !== undefined ? (node.isSuperTopic ? superNameMap[node.communityId] : topicNameMap[node.communityId]) : undefined;
                 const fullName = topicName || node.name;
-                let label = fullName;
-                let nameFont = Math.min(radius * 0.62, innerWidth / Math.max(label.length, 1));
+                let lines: string[] = [fullName];
+                let nameFont = Math.min(radius * 0.62, innerWidth / Math.max(fullName.length, 1));
                 if (nameFont < radius * 0.36) {
-                  const maxChars = Math.max(2, Math.floor(innerWidth / (radius * 0.44)));
-                  label = truncateLabel(fullName, maxChars);
-                  nameFont = Math.min(radius * 0.62, innerWidth / Math.max(label.length, 1));
+                  // 单行放不下：试两行
+                  nameFont = radius * 0.36;
+                  const perLine = Math.max(2, Math.floor(innerWidth / nameFont));
+                  if (fullName.length > perLine * 2) {
+                    lines = [truncateLabel(fullName, perLine * 2)];
+                    nameFont = Math.min(radius * 0.5, innerWidth / Math.max(lines[0].length, 1));
+                  } else if (fullName.length > perLine) {
+                    const cut = Math.ceil(fullName.length / 2);
+                    lines = [fullName.slice(0, cut), fullName.slice(cut)];
+                  } else {
+                    nameFont = Math.min(radius * 0.5, innerWidth / Math.max(fullName.length, 1));
+                  }
                 }
                 if (nameFont * globalScale >= 5.5) {
                   ctx.font = `600 ${nameFont}px Inter, sans-serif`;
@@ -1800,9 +1858,13 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
                   ctx.textBaseline = 'middle';
                   ctx.lineWidth = 2.5 / globalScale;
                   ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
-                  ctx.strokeText(label, node.x, node.y);
-                  ctx.fillStyle = '#ffffff';
-                  ctx.fillText(label, node.x, node.y);
+                  const lh = nameFont * 1.12;
+                  const y0 = node.y - ((lines.length - 1) * lh) / 2;
+                  lines.forEach((ln, i) => {
+                    ctx.strokeText(ln, node.x!, y0 + i * lh);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillText(ln, node.x!, y0 + i * lh);
+                  });
                 }
                 // 右上角成员数徽标（小圆 + 数字；"其他知识"桶不显示）
                 const badgeR = Math.max(4.2, Math.min(6.5, radius * 0.3));
@@ -1862,7 +1924,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
             hexagonPath(ctx, node.x, node.y, Math.max(9, baseRadius * 1.4));
             ctx.fill();
           }}
-          linkColor={(link: GraphLink) => {
+          linkColor={(link: GraphLink & { count?: number }) => {
             const source = linkEndpointId(link.source);
             const target = linkEndpointId(link.target);
             const isHighlight = matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId || source === detailNodeId || target === detailNodeId;
@@ -1874,6 +1936,8 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
             // 其他知识桶（杂散节点汇聚）：边更淡，降低视觉噪声
             const isOther = source.includes('topic:-1') || target.includes('topic:-1');
             if (isOther) return 'rgba(148, 163, 184, 0.15)';
+            // 聚合话题边：透明度随关联强度递增（弱边近乎不可见，强边清晰）
+            if (link.count && link.count > 1) return `rgba(100, 116, 139, ${Math.min(0.7, 0.25 + link.count * 0.06)})`;
             // 非高亮：按关系类型语义着色，统一适中的饱和度透明度（清晰可见但不抢眼）
             const rel = (link.relation_type || 'related_to') as string;
             const relColor: Record<string, string> = {
@@ -1894,7 +1958,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
             const target = linkEndpointId(link.target);
             const isHighlight = matchedIds.has(source) || matchedIds.has(target) || selectedNodeIds.includes(source) || selectedNodeIds.includes(target) || source === focusedNodeId || target === focusedNodeId || source === detailNodeId || target === detailNodeId;
             // 聚合话题边：宽度随跨话题链接数加权
-            if (link.count && link.count > 1) return Math.min(3.6, 1 + link.count * 0.4);
+            if (link.count && link.count > 1) return Math.min(5, 1 + link.count * 0.55);
             return isHighlight ? 2.4 : 1.4;
           }}
           linkDirectionalParticles={(link: GraphLink) => {

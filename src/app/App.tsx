@@ -156,7 +156,7 @@ export default function App() {
 
 
   return (
-    <div className="h-screen flex flex-col bg-white max-w-md mx-auto relative">
+    <div className={`h-screen flex flex-col bg-white max-w-md mx-auto relative ${currentPage === 'knowledge' ? 'md:max-w-4xl' : ''}`}>
       {/* 主内容区 */}
       <main className="flex-1 overflow-hidden relative">
         {/* keep-alive: 页面首次访问挂载后常驻, 切换只改可见性, 不重新请求数据 */}
@@ -183,7 +183,7 @@ export default function App() {
       {/* 底部导航 */}
       {currentPage !== 'item-detail' && (
         <nav className="flex-none border-t border-gray-100 bg-white/80 backdrop-blur-xl">
-          <div className="flex items-center px-3 pt-1.5 pb-2">
+          <div className="flex items-center px-3 pt-1.5 pb-2 max-w-md mx-auto">
             {navItems.map((item) => {
               const active = currentPage === item.page;
               const Icon = item.icon;
