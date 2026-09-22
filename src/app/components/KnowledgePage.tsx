@@ -248,8 +248,6 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
   /** 滚轮缩放自动下钻（2026-09）：d3 不区分程序化 zoom 与滚轮，
    *  程序化 zoom（fit/聚焦/按钮）会同步触发 end 事件，必须用时间窗抑制；
    *  基准 zoom 记录最后一次程序化设定值，滚轮相对它累计超阈值才触发下钻/回退。 */
-  const wheelDrillSuppressUntilRef = useRef(0);
-  const wheelDrillBaseZoomRef = useRef(1);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [setupStatus, setSetupStatus] = useState<GraphSetupStatus | null>(null);
@@ -1024,29 +1022,21 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
     setFocusedNodeId((current) => (current === nodeId ? null : current));
   }, []);
 
-  /** 记录一次程序化 zoom：更新滚轮下钻基准值，并在 transition 时长+缓冲内抑制滚轮下钻判定 */
-  const noteProgrammaticZoom = useCallback((k: number, durationMs = 0) => {
-    wheelDrillBaseZoomRef.current = k;
-    wheelDrillSuppressUntilRef.current = Date.now() + durationMs + 150;
-  }, []);
-
   const handleZoomIn = useCallback(() => {
     const fg = fgRef.current;
     if (fg) {
       const next = fg.zoom() * 1.2;
-      noteProgrammaticZoom(next, 400);
       fg.zoom(next, 400);
     }
-  }, [noteProgrammaticZoom]);
+  }, []);
 
   const handleZoomOut = useCallback(() => {
     const fg = fgRef.current;
     if (fg) {
       const next = fg.zoom() * 0.8;
-      noteProgrammaticZoom(next, 400);
       fg.zoom(next, 400);
     }
-  }, [noteProgrammaticZoom]);
+  }, []);
 
   /** 计算画布内不被侧边面板/详情面板遮挡的可用视口（相对 graphArea 左上角）。
    *  侧边面板（w-52 左侧）与详情面板（桌面右侧 / 移动底部抽屉）以 absolute 覆盖在画布上，
@@ -1125,10 +1115,9 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
     const cy = (allBbox.y[0] + allBbox.y[1]) / 2;
     const ux = left + uw / 2;
     const uy = top + uh / 2;
-    noteProgrammaticZoom(fitScale, 0);
     fg.zoom(fitScale, 0);
     fg.centerAt((gw / 2 - ux) / fitScale + cx, (gh / 2 - uy) / fitScale + cy, 0);
-  }, [computeUsableViewport, displayGraphData.nodes.length, noteProgrammaticZoom]);
+  }, [computeUsableViewport, displayGraphData.nodes.length]);
 
   const handleFitView = useCallback(() => {
     fitAllNodes();
@@ -1181,50 +1170,6 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
       fitAllNodes();
     }, 50);
   }, [drillTopicId, fitAllNodes]);
-
-  /** 滚轮缩放自动下钻/回退（2026-09）：
-   *  - 放大超过基准 1.7x：若视口中心附近有话题节点，自动下钻一层（总览→大话题→中话题）
-   *  - 缩小低于基准 0.55x：自动回退一层（中话题→大话题→总览）
-   *  程序化 zoom（fit/聚焦/按钮/下钻后适配）由 noteProgrammaticZoom 时间窗抑制，不会误判。
-   *  详情面板打开时不自动下钻（用户正在检查成员节点）。 */
-  const handleGraphZoomEnd = useCallback(({ k }: { k: number }) => {
-    if (Date.now() < wheelDrillSuppressUntilRef.current) return;
-    const base = wheelDrillBaseZoomRef.current;
-    const fg = fgRef.current;
-    if (!fg || !(base > 0)) return;
-
-    // 缩小 → 回退一层（总览层无上级可回）
-    if (k < base * 0.55 && (drillTopicId !== null || drillSuperId !== null)) {
-      wheelDrillSuppressUntilRef.current = Date.now() + 800;
-      drillBack();
-      return;
-    }
-
-    // 放大 → 找视口中心最近的话题节点下钻；下钻 2（成员层）已是末层，详情面板打开时不钻
-    if (k > base * 1.7 && drillTopicId === null && !detailNodeId) {
-      const cx = dimensions.width / 2;
-      const cy = dimensions.height / 2;
-      const maxDist = Math.min(dimensions.width, dimensions.height) * 0.35;
-      let best: { communityId: number; dist: number } | null = null;
-      for (const node of displayGraphData.nodes) {
-        if (!node.isTopic || node.communityId === undefined) continue;
-        if (typeof node.x !== 'number' || typeof node.y !== 'number') continue;
-        const s = fg.graph2ScreenCoords(node.x, node.y);
-        const dist = Math.hypot(s.x - cx, s.y - cy);
-        if (dist <= maxDist && (!best || dist < best.dist)) {
-          best = { communityId: node.communityId, dist };
-        }
-      }
-      if (best) {
-        wheelDrillSuppressUntilRef.current = Date.now() + 800;
-        if (drillSuperId === null) {
-          drillIntoSuper(best.communityId);
-        } else {
-          drillIntoTopic(best.communityId);
-        }
-      }
-    }
-  }, [drillTopicId, drillSuperId, detailNodeId, dimensions.width, dimensions.height, displayGraphData.nodes, drillBack, drillIntoSuper, drillIntoTopic]);
 
   const handleCategorySelect = useCallback((kind: string) => {
     autoFitRef.current = true;
@@ -1487,7 +1432,6 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
       ? Math.max(0.1, Math.min(4.0, fitScale))
       : Math.max(1.0, Math.min(4.0, Math.log2(fitScale + 1) * 0.85 + 1.0));
 
-    noteProgrammaticZoom(targetScale, 0);
     fg.zoom(targetScale, 0);
     // 同 fitAllNodes：不读 screen2GraphCoords（过渡期不同步），
     // 用纯数学把节点 (nodeX, nodeY) 放到可用区域中心 (targetScreenX, targetScreenY)
@@ -1498,7 +1442,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
     );
 
     return true;
-  }, [computeUsableViewport, dimensions.height, dimensions.width, displayGraphData.nodes, displayGraphData.links, fitAllNodes, focusedNodeId, selectedNodeIds, noteProgrammaticZoom]);
+  }, [computeUsableViewport, dimensions.height, dimensions.width, displayGraphData.nodes, displayGraphData.links, fitAllNodes, focusedNodeId, selectedNodeIds]);
 
   /** 引擎停止：聚合视图先归一化布局，再校准视口（总览/下钻立即可读） */
   const handleEngineStop = useCallback(() => {
@@ -1972,7 +1916,6 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
           onNodeDragEnd={() => {
             autoFitRef.current = false;
           }}
-          onZoomEnd={handleGraphZoomEnd}
           onNodeClick={(node: GraphNode) => {
             // 话题层级：点击话题大节点 → 下钻局部视图；点击成员节点 → 打开详情
             if (node.isTopic && node.communityId !== undefined) {
