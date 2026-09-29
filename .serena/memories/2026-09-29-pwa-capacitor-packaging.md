@@ -31,3 +31,9 @@
 - **坑**: Vercel dev 的 Windows 动态段路由 `api/graph/[op].ts` 不生效(请求落到 Vite SPA),改静态文件+重写规避。`GET /api/*` 返回 `{ok,route}` 是刻意健康探针,不是 bug。
 - **冗余**: 同一仓库连了 3 个 Vercel 项目(evolvmind-2025 / -7p31 / -qzhu),每次 push 三份构建。域名 evolvmind-2025.vercel.app 归属原项目;两个后缀项目是多余的,建议删(待用户确认)。
 - **以后加 API 端点前先数函数**: `find api -name "*.ts" -not -path "*_lib*" | wc -l` ≤ 12;超限就往 graph-ops 式分发器里并。
+
+## 追记2:APK CI 三连坑(2026-09-29 全修,构建已过)
+1. `android-actions/setup-android@v3` 在 cmdline-tools 16.0 下装废弃 `tools` 包必败 -> **删掉**,ubuntu-latest runner 自带 SDK。
+2. Capacitor CLI 要 **Node >=22**(workflow 从 20 升 22)。
+3. Capacitor 7 的 variables.gradle sourceCompatibility=**21** -> setup-java 用 **21**(不是 17)。
+最终 workflow:checkout -> node22+java21 -> npm ci -> vite build -> cap sync -> gradlew assembleDebug -> upload artifact。产物 3MB debug APK,保留 90 天。
