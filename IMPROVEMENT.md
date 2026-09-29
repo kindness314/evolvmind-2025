@@ -48,6 +48,11 @@ Git 状态（2026-09-19）：09-01 `83a01bc`（语义主题图谱+图谱驱动�
 | ~~分类视图长标签溢出~~ | `KnowledgePage.tsx` zoomToFit | ✅ 已修 (话题标签画在节点内) | O6 |
 | ~~移动端缩放感不一致~~ | `KnowledgePage.tsx` | ✅ 已修 (2026-08-18) | O6 |
 | ~~侧边面板（w-52）遮挡画布左 46% 下方节点不可点击~~ | `KnowledgePage.tsx` | ✅ 已修 (2026-09-03 侧栏默认折叠 + 「话题列表」按钮展开) | O6 |
+| ~~悬空捕获引用致节点"N 条"计数虚高（demo 实测约 30%）~~ | `knowledge_nodes.source_captured_ids` / `knowledge_links.evidence_captured_ids` | ✅ 数据已修复 (2026-09-26 REST 清理 232 节点/313 关系共 778 条悬空引用；验证：专注度 17→10、推存面板与话题状况计数与真实记录一致) | — |
+| ⏳ migration `20260926000000_fix_dangling_captured_refs`（存量清理 + 删除捕获自动清引用触发器）**已建文件但未能 push**：本机 supabase CLI 直连 PG 超时（代理不承载 PG 协议），需在可直连网络下跑 `supabase db push --linked --yes`；应用层已加 `src/lib/captureRefs.ts` 删除后同步清理兜底 | migration 文件 | ⬜ 待 push | — |
+| ~~topic_labels 用 limit(5000) 拉取被 PostgREST max_rows=1000 静默截为 1000，60 个节点丢失分类落入「其他」，话题成员数/推荐数虚低（工作 353→316）~~ | `KnowledgePage.tsx` | ✅ 已修 (2026-09-27 改分页 range 拉全) | — |
+| ~~graph.ts 合并时全量拉 nodes/links 未分页，超 1000 后 merge/dedupe 看不到老行 → 重复建节点/边~~ | `src/lib/graph.ts` | ✅ 已修 (2026-09-27 分页拉全) | — |
+| ~~DataPage 主列表查询未分页，超 1000 条记录丢尾部~~ | `DataPage.tsx` | ✅ 已修 (2026-09-27 分页拉全) | — |
 | ~~滚轮缩放自动下钻/回总览未做~~ | `KnowledgePage.tsx` | ✅ 已修 (2026-09-19：onZoomEnd + 程序化 zoom 抑制，放大 1.7x 下钻 / 缩小 0.55x 回退，浏览器实测双向通过) | O6 |
 | ~~Settings 显示 GPT-4/Claude/Whisper 假模型下拉~~ | `SettingsPage.tsx` | ✅ 已修 (O4, 2026-08-18) | O4 |
 | ~~聊天模型候选列表含被拒绝的旧模型名~~ | `api/extract.ts`, `api/summarize.ts`, `api/judge.ts` | ✅ 已修 (2026-09-19：删 abab*/gpt-3.5-turbo，默认改 MiniMax-M2.5) | O4 |
@@ -122,8 +127,8 @@ Git 状态（2026-09-19）：09-01 `83a01bc`（语义主题图谱+图谱驱动�
 | # | 事项 | 状态 | 说明 |
 |---|------|------|------|
 | 1 | 多模态解析 | ✅ | 2026-09-03 已实现：txt/md 正文、pdf/docx 提取、图片 OCR、语音转写 |
-| 2 | PWA 化 | ⬜ | `vite-plugin-pwa`：添加到主屏幕、离线缓存 |
-| 3 | 原生壳打包 | ⬜ | Capacitor → iOS App Store / Android 商店（需开发者账号） |
+| 2 | PWA 化 | ✅ | 2026-09-29 已实现：vite-plugin-pwa(autoUpdate SW、静态预缓存、API/Supabase NetworkOnly)、manifest(中文名/品牌蓝/maskable 图标)、index.html theme-color+apple 元信息、安全区适配。浏览器实测 manifest/SW/渲染 ✓ |
+| 3 | 原生壳打包 | ⬜(Android 壳已就绪) | 2026-09-29：Capacitor Android 工程已生成(WebView 加载线上站，始终最新)、品牌图标全密度已生成；本机无 Android SDK，APK 走 GitHub Actions(`.github/workflows/android-apk.yml`)或装 SDK 后 `npm run apk`。iOS 需 Mac+开发者账号 |
 | 4 | 推送通知 | ⬜ | 复习提醒/知识更新；FCM + Supabase Edge Functions；第一版先做首页"智能建议卡片"，不做系统通知 |
 | 5 | 监控 & 崩溃收集 | ⬜ | Sentry（Vercel + React），覆盖前端/API/Supabase 错误 |
 | 6 | 移动端适配增强 | ⬜ | Web Share API、原生文件选择、手势 |
@@ -144,7 +149,7 @@ Git 状态（2026-09-19）：09-01 `83a01bc`（语义主题图谱+图谱驱动�
 | 阶段 | 内容 | 前置 |
 |------|------|------|
 | M1: 可部署 | ✅ 已完成（Embedding、生产部署、真实认证） | — |
-| M2: 可分发 | PWA + 原生壳 | O1-O7 已完成 ✅（前置已满足），待启动 |
+| M2: 可分发 | PWA ✅ + Android 壳工程 ✅(待出 APK) | O1-O7 已完成 ✅(2026-09-29 推进) |
 | M3: 可运营 | 推送 + 监控 | M2 |
 | M4: 体验优化 | 性能 + 移动端 + 多模态解析 | 持续 |
 
@@ -155,7 +160,7 @@ Git 状态（2026-09-19）：09-01 `83a01bc`（语义主题图谱+图谱驱动�
 1. `npm run typecheck` ✅（持续通过）
 2. `npm run build` ✅（持续通过；主 chunk ~682KB 大 chunk 警告为 Vite 阈值，非失败）
 3. **Vercel Production 环境变量与 Supabase project ref 一致** ⬜（需推送部署后核对 `SUPABASE_URL`/`ANON_KEY`/`MINIMAX_KEY`）
-4. 未认证 LLM 端点的认证、限流或配额策略 ✅（2026-08-18 已修：`/api/extract`、`/api/graph/extract`、`/api/judge` 加 `resolveRequestScope` —— Demo（`X-EvolvMind-Demo`/body.demo）或真实 Bearer，匿名 401；前端 `ai.ts`/`graph.ts` 调用改用 `getApiAuthHeaders()`；`/api/models` 只读模型列表、无配额消耗，保留公开。实测匿名 401/Demo 200）
+4. 未认证 LLM 端点的认证、限流或配额策略 ✅（2026-08-18 已修：`/api/extract`、`/api/graph/extract`、`/api/judge` 加 `resolveRequestScope` —— Demo（`X-EvolvMind-Demo`/body.demo）或真实 Bearer，匿名 401；前端 `ai.ts`/`graph.ts` 调用改用 `getApiAuthHeaders()`；实测匿名 401/Demo 200）✅（2026-09-29 补：全量 LLM 端点接入 Supabase RPC 固定窗口限流 `rate_limit_hit`，真实用户按 user_id、demo 按访客 IP，默认 20/分钟（搜索 30、重负载 10），超限 429；`/api/models` 也补了认证。详见 `.serena/memories/2026-09-29-security-audit.md`）
 5. 普通请求不得无条件使用 `SUPABASE_SERVICE_ROLE_KEY` ✅（通过 + 可审计 Demo 例外：仅 Demo 标识（header/body.demo）走 service-role 固定 UUID，普通请求经 Bearer → RLS 用户隔离）
 6. 真实 A/B 隔离验收 ✅ **Email 路径已 PASS（2026-07-25，13/13，提交 `2fa3a2b` 关闭任务）**；手机号路径 BLOCKED（Twilio Trial + 中国短信，分开记录）
 7. 生产域名 HTTPS / Auth / Storage / 搜索 / 图谱公网烟测 ⬜（需推送部署后公网执行）
