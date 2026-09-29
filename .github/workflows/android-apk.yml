@@ -16,13 +16,15 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: android-actions/setup-android@v3
+      # ubuntu-latest 自带 Android SDK,无需 setup-android(v3 会因废弃的 tools 包报错)
       - run: npm ci
       - run: npm run build
       - run: npx cap sync android
       - name: Assemble debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
           name: evolvmind-debug-apk
