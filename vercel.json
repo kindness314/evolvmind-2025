@@ -1,7 +1,7 @@
 {
   "rewrites": [
     {
-      "source": "/api/graph/(embed|backfill|search|topicize|classify-topics|disambiguate)",
+      "source": "/api/graph/(embed|backfill|search|topicize|topicize-backfill|classify-topics|disambiguate)",
       "destination": "/api/graph-ops?op=$1"
     },
     {

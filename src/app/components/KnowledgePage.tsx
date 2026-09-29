@@ -324,42 +324,55 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
       }
       const data = labelRows;
       if (cancelled) return;
-      if (data.length === 0) {
-        // 表全空：没有一个数据被分类过 → 才触发一次全量兜底分类
-        setNodeTopicMap(new Map());
-        if (graphData.nodes.length > 0 && !classifyingRef.current) {
-          classifyingRef.current = true;
-          const isDemo = localStorage.getItem('demo_auth') === 'true';
-          const items = graphData.nodes.map((n) => ({ id: n.id, name: n.name, aliases: n.aliases || [] }));
-          for (let i = 0; i < items.length; i += 200) {
-            const batch = items.slice(i, i + 200);
-            try {
-              const resp = await fetch('/api/graph/topicize', {
-                method: 'POST',
-                headers: await getApiAuthHeaders(),
-                body: JSON.stringify({ nodes: batch, demo: isDemo }),
-              });
-              if (!resp.ok) continue;
-              const j = (await resp.json()) as { map?: Record<string, string> };
-              if (j.map) {
-                const c = new Map(nodeTopicRef.current);
-                for (const [id, cat] of Object.entries(j.map)) if (cat) c.set(id, cat);
-                nodeTopicRef.current = c;
-                setNodeTopicMap(c);
-              }
-            } catch {
-              // 兜底失败不阻塞图谱展示
-            }
-          }
-          saveNodeTopicCache(topicScope, nodeTopicRef.current);
-          classifyingRef.current = false;
-        }
-        return;
-      }
       const m = new Map<string, string>();
       for (const r of data) if (r.name) m.set(r.cluster_key, r.name);
       setNodeTopicMap(m);
       saveNodeTopicCache(topicScope, m);
+
+      // 增量话题回填（2026-09-29）：不论表全空还是部分缺失，凡有节点无合法细主题缓存
+      // 就调一次回填端点（服务端幂等：差集→分批 LLM→写缓存），完成后重读标签。
+      // 替代旧逻辑"仅表全空才逐批调 topicize"——部分缺失（静默失败/清理误删）以前永远不补。
+      const unclassified = graphData.nodes.filter((n) => !m.has(n.id)).length;
+      if (unclassified > 0 && !classifyingRef.current) {
+        classifyingRef.current = true;
+        try {
+          const isDemo = localStorage.getItem('demo_auth') === 'true';
+          // 端点单次最多 10 批(2000 节点),remaining>0 时循环续跑(限 3 次防死循环)
+          for (let round = 0; round < 3; round++) {
+            const resp = await fetch('/api/graph/topicize-backfill', {
+              method: 'POST',
+              headers: await getApiAuthHeaders(),
+              body: JSON.stringify({ demo: isDemo }),
+            });
+            if (!resp.ok) break;
+            const j = (await resp.json()) as { remaining?: number };
+            if (!j.remaining || j.remaining <= 0) break;
+          }
+          // 重读标签刷新视图
+          const fresh: Array<{ cluster_key: string; name: string | null }> = [];
+          for (let from = 0; ; from += PAGE) {
+            const { data: page } = await supabase
+              .from('topic_labels')
+              .select('cluster_key,name')
+              .eq('scope_id', scopeId)
+              .range(from, from + PAGE - 1);
+            if (!page || page.length === 0) break;
+            fresh.push(...(page as typeof fresh));
+            if (page.length < PAGE) break;
+          }
+          if (!cancelled) {
+            const fm = new Map<string, string>();
+            for (const r of fresh) if (r.name) fm.set(r.cluster_key, r.name);
+            nodeTopicRef.current = fm;
+            setNodeTopicMap(fm);
+            saveNodeTopicCache(topicScope, fm);
+          }
+        } catch {
+          // 回填失败不阻塞图谱展示(保持现状,下次挂载再试)
+        } finally {
+          classifyingRef.current = false;
+        }
+      }
     };
     load();
     return () => {

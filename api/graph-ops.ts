@@ -9,6 +9,7 @@ import search from './_lib/graphOps/search.js';
 import topicize from './_lib/graphOps/topicize.js';
 import classifyTopics from './_lib/graphOps/classify-topics.js';
 import disambiguate from './_lib/graphOps/disambiguate.js';
+import topicizeBackfill from './_lib/graphOps/topicize-backfill.js';
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 
 type Handler = (req: VercelRequest, res: VercelResponse) => unknown;
@@ -20,6 +21,7 @@ const handlers: Record<string, Handler> = {
   topicize: topicize as Handler,
   'classify-topics': classifyTopics as Handler,
   disambiguate: disambiguate as Handler,
+  'topicize-backfill': topicizeBackfill as Handler,
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
