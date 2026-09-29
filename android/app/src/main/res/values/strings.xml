@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">EvolvMind</string>
+    <string name="title_activity_main">EvolvMind</string>
+    <string name="package_name">com.evolvmind.app</string>
+    <string name="custom_url_scheme">com.evolvmind.app</string>
+</resources>

@@ -7,6 +7,7 @@ import { CapturePage } from './components/CapturePage';
 import { SettingsPage } from './components/SettingsPage';
 import { LoginPage } from './components/LoginPage';
 import { ItemDetailPage } from './components/ItemDetailPage';
+import { Toaster } from './components/ui/sonner';
 import { supabase } from '../lib/supabase';
 
 // O6: KnowledgePage 懒加载 —— 它独占 react-force-graph-2d 依赖，
@@ -156,7 +157,9 @@ export default function App() {
 
 
   return (
-    <div className={`h-screen flex flex-col bg-white max-w-md mx-auto relative ${currentPage === 'knowledge' ? 'sm:max-w-4xl' : ''}`}>
+    <div className={`h-dvh flex flex-col bg-white max-w-md mx-auto relative pt-[env(safe-area-inset-top)]`}>
+      {/* 全局 toast 挂载点（此前缺失导致所有 toast 静默） */}
+      <Toaster position="top-center" richColors closeButton />
       {/* 主内容区 */}
       <main className="flex-1 overflow-hidden relative">
         {/* keep-alive: 页面首次访问挂载后常驻, 切换只改可见性, 不重新请求数据 */}
@@ -182,7 +185,7 @@ export default function App() {
 
       {/* 底部导航 */}
       {currentPage !== 'item-detail' && (
-        <nav className="flex-none border-t border-gray-100 bg-white/80 backdrop-blur-xl">
+        <nav className="flex-none border-t border-gray-100 bg-white/80 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center px-3 pt-1.5 pb-2 max-w-md mx-auto">
             {navItems.map((item) => {
               const active = currentPage === item.page;
