@@ -7,6 +7,8 @@
 // 手动声明 Vercel 平台类型，避免依赖 @vercel/node
 export type VercelRequest = {
   method?: string;
+  /** Node IncomingMessage 的 url(Vercel 运行时会带) */
+  url?: string;
   headers: Record<string, string | string[] | undefined>;
   body: any;
   query: Record<string, string | string[]>;

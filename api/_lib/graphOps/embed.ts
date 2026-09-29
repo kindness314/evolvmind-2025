@@ -1,7 +1,7 @@
-import { buildKnowledgeNodeEmbeddingText, generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
-import { resolveRequestScope } from '../_lib/requestScope.js';
-import { resolveApiKey } from '../_lib/apiKey.js';
-import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from '../_lib/rateLimit.js';
+import { buildKnowledgeNodeEmbeddingText, generateEmbedding, type VercelRequest, type VercelResponse } from '../embedding.js';
+import { resolveRequestScope } from '../requestScope.js';
+import { resolveApiKey } from '../apiKey.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from '../rateLimit.js';
 // Vercel Hobby 默认函数时长 10s, 节点 embedding 批量调用需留出余量
 export const maxDuration = 60;
 

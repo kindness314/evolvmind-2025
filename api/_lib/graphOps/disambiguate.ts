@@ -8,11 +8,11 @@
  * 输出：{ merges: [{ name, targetId, targetName, similarity }] }，前端据此把新节点
  * 合并进已有节点（别名 + 捕获关联），而不是新建重复节点。
  */
-import { generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
-import { resolveRequestScope } from '../_lib/requestScope.js';
-import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from '../_lib/rateLimit.js';
-import { resolveApiKey } from '../_lib/apiKey.js';
-import { cosineSimilarity } from '../_lib/similarity.js';
+import { generateEmbedding, type VercelRequest, type VercelResponse } from '../embedding.js';
+import { resolveRequestScope } from '../requestScope.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from '../rateLimit.js';
+import { resolveApiKey } from '../apiKey.js';
+import { cosineSimilarity } from '../similarity.js';
 
 export const maxDuration = 60;
 

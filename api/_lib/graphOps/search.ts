@@ -1,7 +1,7 @@
-import { generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
-import { resolveRequestScope } from '../_lib/requestScope.js';
-import { resolveApiKey } from '../_lib/apiKey.js';
-import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from '../_lib/rateLimit.js';
+import { generateEmbedding, type VercelRequest, type VercelResponse } from '../embedding.js';
+import { resolveRequestScope } from '../requestScope.js';
+import { resolveApiKey } from '../apiKey.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from '../rateLimit.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
