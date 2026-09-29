@@ -12,10 +12,12 @@
  *
  * Mock Input/Output:
  *   Input:  POST { "period": "7d", "demo": true }
+ *           或自选时间: POST { "period": "custom", "since": "2026-09-01", "until": "2026-09-20", "demo": true }
  *   Output: { "ok": true, "narrative": "这周你...", "themes": [...], "trends": [...], "nextActions": [...] }
  */
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope, type RequestScope } from './_lib/requestScope.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from './_lib/rateLimit.js';
 import { resolveApiKey } from './_lib/apiKey.js';
 import { computeThemeDirections, splitByWindow, tagFrequency, computeDepthProfile, findImplicitPairs, type ThemeTrend } from './_lib/insights.js';
 import { detectCommunities, evolutionOf, describeCommunity, type Community } from './_lib/community.js';
@@ -182,6 +184,7 @@ async function aggregateData(
   scope: RequestScope,
   since: string,
   supabaseKey: string,
+  until?: string,
 ): Promise<AggregatedData> {
   const baseUrl = SUPABASE_URL.replace(/\/$/, '');
   const headers = {
@@ -190,13 +193,14 @@ async function aggregateData(
   };
 
   const capturedFilter = scope.isDemo ? 'user_id=is.null' : `user_id=eq.${encodeURIComponent(scope.scopeId)}`;
-  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(since)}&${capturedFilter}&order=created_at.desc`;
+  const untilFilter = until ? `&created_at=lt.${encodeURIComponent(until)}` : '';
+  const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,type,title,summary,content,tags,created_at&created_at=gte.${encodeURIComponent(since)}${untilFilter}&${capturedFilter}&order=created_at.desc`;
   const captured: CapturedRow[] = (await fetchAllRows(capturedUrl, headers)) as CapturedRow[];
 
-  const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc`;
+  const nodesUrl = `${baseUrl}/rest/v1/knowledge_nodes?select=id,name,kind,source_captured_ids,created_at&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}${untilFilter}&order=created_at.desc`;
   const nodes: NodeRow[] = (await fetchAllRows(nodesUrl, headers)) as NodeRow[];
 
-  const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,source,target,relation_type,evidence_captured_ids,created_at,source_node:knowledge_nodes!knowledge_links_source_fkey(name),target_node:knowledge_nodes!knowledge_links_target_fkey(name)&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc`;
+  const linksUrl = `${baseUrl}/rest/v1/knowledge_links?select=id,source,target,relation_type,evidence_captured_ids,created_at,source_node:knowledge_nodes!knowledge_links_source_fkey(name),target_node:knowledge_nodes!knowledge_links_target_fkey(name)&scope_id=eq.${encodeURIComponent(scope.scopeId)}&created_at=gte.${encodeURIComponent(since)}${untilFilter}&order=created_at.desc`;
   const rawLinks: LinkRow[] = (await fetchAllRows(linksUrl, headers)) as LinkRow[];
 
   const scopeNodeIds = new Set(nodes.map((n) => n.id));
@@ -476,7 +480,7 @@ function buildNarrative(
   themeDirections: Map<string, ThemeTrend>,
   communityBlocks: CommunityBlock[],
 ): string {
-  const periodText = period === '7d' ? '这一周' : '这一个月';
+  const periodText = period === '7d' ? '这一周' : period === '30d' ? '这一个月' : '这段时间';
   if (agg.capturedCount === 0) {
     return `${periodText}你还没有新的记录，图谱也没有新的变化。试着记录一件小事，系统才能帮你看见规律。`;
   }
@@ -627,7 +631,7 @@ function buildDeterministicResponse(
   if (agg.capturedCount === 0) {
     nextActions.push('当前没有新捕获的内容，去记录一些想法吧');
   } else if (agg.capturedCount <= 3) {
-    nextActions.push(`近${period}只记录了 ${agg.capturedCount} 条，试着每天记一条，积累越多越容易发现规律`);
+    nextActions.push(`近${period === '7d' ? '7 天' : period === '30d' ? '30 天' : '段时间'}只记录了 ${agg.capturedCount} 条，试着每天记一条，积累越多越容易发现规律`);
   }
 
   // 2. 未生成知识节点——引导关联
@@ -712,7 +716,7 @@ function buildDeterministicResponse(
  * 7d 返回 null（窗口太短不值得分段）。
  */
 function buildWeeklyTimeline(agg: AggregatedData, period: string): string | null {
-  if (period !== '30d') return null;
+  if (period !== '30d' && period !== 'custom') return null;
   const now = Date.now();
   const WEEK_MS = 7 * 24 * 3600 * 1000;
   const rows: string[] = [];
@@ -965,9 +969,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const period = typeof req.body?.period === 'string' ? req.body.period : '';
-  if (period !== '7d' && period !== '30d') {
-    res.status(400).json({ error: 'Invalid period, must be "7d" or "30d"' });
+  if (period !== '7d' && period !== '30d' && period !== 'custom') {
+    res.status(400).json({ error: 'Invalid period, must be "7d", "30d" or "custom"' });
     return;
+  }
+
+  // 自定义时间范围：since 必填（'YYYY-MM-DD' 或 ISO），until 缺省为现在
+  let customSince: string | null = null;
+  let customUntil: string | null = null;
+  if (period === 'custom') {
+    const rawSince = typeof req.body?.since === 'string' ? req.body.since : '';
+    const sinceDate = new Date(rawSince.length === 10 ? `${rawSince}T00:00:00` : rawSince);
+    if (!rawSince || Number.isNaN(sinceDate.getTime())) {
+      res.status(400).json({ error: 'period=custom requires a valid "since" date' });
+      return;
+    }
+    const rawUntil = typeof req.body?.until === 'string' ? req.body.until : '';
+    let untilDate = new Date();
+    if (rawUntil) {
+      const parsed = new Date(rawUntil.length === 10 ? `${rawUntil}T23:59:59.999` : rawUntil);
+      if (Number.isNaN(parsed.getTime())) {
+        res.status(400).json({ error: 'Invalid "until" date' });
+        return;
+      }
+      untilDate = parsed;
+    }
+    if (untilDate.getTime() <= sinceDate.getTime()) {
+      res.status(400).json({ error: '"until" must be after "since"' });
+      return;
+    }
+    customSince = sinceDate.toISOString();
+    customUntil = untilDate.toISOString();
   }
 
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -978,8 +1010,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const supabaseKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
 
   const now = new Date();
-  const days = period === '7d' ? 7 : 30;
-  const since = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+  const days = period === '7d' ? 7 : period === '30d' ? 30 : 0;
+  const since = customSince ?? new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+  // 趋势/主题方向的窗口策略：7d=等长上期对比，30d=近7天vs更早；custom 按跨度取近似
+  const effectivePeriod: string = period === 'custom'
+    ? ((new Date(customUntil ?? now.toISOString()).getTime() - new Date(since).getTime()) <= 15 * 86400000 ? '7d' : '30d')
+    : period;
 
   try {
     const requestScope = await resolveRequestScope({
@@ -987,14 +1023,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       supabaseUrl: SUPABASE_URL,
       anonKey: SUPABASE_ANON_KEY,
     });
+    // 限流(安全审计): 超限抛 RATE_LIMIT_ERROR 由外层 catch 转 429;RPC 故障放行
+    await rateLimitOrThrow({ req, scope: requestScope, supabaseUrl: SUPABASE_URL, serviceKey: supabaseKey, limit: 10 });
     const queryToken = requestScope.accessToken || supabaseKey;
-    const agg = await aggregateData(requestScope, since, queryToken);
+    const agg = await aggregateData(requestScope, since, queryToken, customUntil ?? undefined);
 
     // 趋势检测：查询上一周期做对比
     const prevAgg = await fetchPreviousPeriod(requestScope, since, queryToken);
-    const trends = detectTrends(agg, prevAgg, period);
-    // 主题方向：等长窗口对比（7d=本期vs上期, 30d=近7天vs更早）
-    const themeDirections = computeThemeDirectionsFor(agg, prevAgg, period);
+    const trends = detectTrends(agg, prevAgg, effectivePeriod);
+    // 主题方向：等长窗口对比（7d=本期vs上期, 30d=近7天vs更早, custom=按跨度取近似）
+    const themeDirections = computeThemeDirectionsFor(agg, prevAgg, effectivePeriod);
 
     // 无数据
     if (agg.capturedCount === 0 && agg.newNodeCount === 0) {
@@ -1179,6 +1217,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).json(fallback);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
+    if (message === RATE_LIMIT_ERROR) { sendRateLimited(res); return; }
     const status = message === 'Authentication required' || message === 'Invalid authentication token' ? 401 : 500;
     res.status(status).json({ error: status === 401 ? 'Unauthorized' : 'Summarize failed', detail: message });
   }

@@ -13,6 +13,7 @@
  *
  * Mock Input/Output:
  *   Input:  POST { "demo": true, "dismissed_ids": [] }
+ *           可选自选时间: { "since": "2026-09-01", "until": "2026-09-20" } 限定推荐候选池
  *   Output: { "ok": true, "recommendations": [{ "id":"sem-xxx","type":"semantic",
  *             "title":"A ↔ B","reason":"…引用数据…","action":"…可执行…",
  *             "targetType":"captured","targetId":"…","secondaryTargetId":"…",
@@ -21,6 +22,7 @@
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope } from './_lib/requestScope.js';
 import { resolveApiKey } from './_lib/apiKey.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from './_lib/rateLimit.js';
 import { batchEmbedCaptures, findSimilarPairs, type CapturedForEmbedding, type CapturedWithEmbedding } from './_lib/similarity.js';
 import {
   buildGraphIndex,
@@ -253,6 +255,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ? (req.body.dismissed_ids as unknown[]).filter((id): id is string => typeof id === 'string')
     : [];
 
+  // 自选时间范围（'YYYY-MM-DD' 或 ISO；非法值静默忽略，不影响默认行为）
+  const parseRangeDate = (raw: unknown, endOfDay: boolean): string | null => {
+    if (typeof raw !== 'string' || !raw) return null;
+    const d = new Date(raw.length === 10 ? `${raw}${endOfDay ? 'T23:59:59.999' : 'T00:00:00'}` : raw);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  };
+  const rangeSince = parseRangeDate(req.body?.since, false);
+  const rangeUntil = parseRangeDate(req.body?.until, true);
+
   const supabaseKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
   try {
     const requestScope = await resolveRequestScope({
@@ -260,6 +271,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       supabaseUrl: SUPABASE_URL,
       anonKey: SUPABASE_ANON_KEY,
     });
+    // 限流(安全审计): 超限抛 RATE_LIMIT_ERROR 由外层 catch 转 429;RPC 故障放行
+    await rateLimitOrThrow({ req, scope: requestScope, supabaseUrl: SUPABASE_URL, serviceKey: supabaseKey, limit: 20 });
     const scopeId = requestScope.scopeId;
     const accessToken = requestScope.accessToken || supabaseKey;
     const baseUrl = SUPABASE_URL.replace(/\/$/, '');
@@ -268,11 +281,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       Authorization: `Bearer ${accessToken}`,
     };
 
-    // 查询近期捕获（30 天窗口，带内容用于 embedding）
+    // 查询近期捕获（默认最近 40 条；自选时间范围时按窗口过滤、放宽条数）
     const capturedScopeFilter = requestScope.isDemo
       ? 'user_id=is.null'
       : `user_id=eq.${encodeURIComponent(scopeId)}`;
-    const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,title,summary,content,tags,created_at&${capturedScopeFilter}&order=created_at.desc&limit=40`;
+    const rangeFilter = (rangeSince ? `&created_at=gte.${encodeURIComponent(rangeSince)}` : '')
+      + (rangeUntil ? `&created_at=lt.${encodeURIComponent(rangeUntil)}` : '');
+    const capturedUrl = `${baseUrl}/rest/v1/captured_info?select=id,title,summary,content,tags,created_at&${capturedScopeFilter}${rangeFilter}&order=created_at.desc&limit=${rangeFilter ? 200 : 40}`;
     const capturedResp = await fetch(capturedUrl, { headers });
     if (!capturedResp.ok) {
       const detail = await capturedResp.text();
@@ -581,7 +596,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 休眠节点与小主题；证据链 = 候选到种子的 BFS 最短路径。
     {
       const RECENT_SEED_DAYS = 14;
-      const seedCutoff = Date.now() - RECENT_SEED_DAYS * 24 * 3600 * 1000;
+      // 自选时间范围时以窗口起点为种子截止（窗口内捕获=「近期思考」）
+      const seedCutoff = rangeSince
+        ? new Date(rangeSince).getTime()
+        : Date.now() - RECENT_SEED_DAYS * 24 * 3600 * 1000;
       const recentSeeds = signalCaptured.filter((c) => {
         const t = new Date(c.created_at).getTime();
         return Number.isFinite(t) && t >= seedCutoff;
@@ -734,6 +752,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
+    if (message === RATE_LIMIT_ERROR) { sendRateLimited(res); return; }
     const status = message === 'Authentication required' || message === 'Invalid authentication token' ? 401 : 500;
     res.status(status).json({ error: status === 401 ? 'Unauthorized' : 'Recommend failed', detail: message });
   }

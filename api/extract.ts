@@ -1,5 +1,6 @@
 import { resolveRequestScope } from './_lib/requestScope.js';
 import { resolveApiKey } from './_lib/apiKey.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from './_lib/rateLimit.js';
 // 手动声明 Vercel 平台提供的请求与响应类型，避免依赖 @vercel/node
 type VercelRequest = {
   method?: string;
@@ -23,6 +24,7 @@ type ExtractedInfo = {
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 // Vercel Hobby 默认函数时长 10s, 而 LLM 上游单次生成实测需 8-54s, 必须提到 60s 上限
 export const maxDuration = 60;
 
@@ -311,11 +313,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // 发布门禁 4: LLM 端点认证 —— Demo（header/body.demo）或真实 Bearer 才允许调用，防止匿名消耗配额
+  let requestScope;
   try {
-    await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+    requestScope = await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
   } catch (e: unknown) {
     res.status(401).json({ error: e instanceof Error ? e.message : 'Authentication required' });
     return;
+  }
+
+  // 限流(安全审计): 超限 429;RPC 故障放行
+  try {
+    await rateLimitOrThrow({ req, scope: requestScope, supabaseUrl: SUPABASE_URL, serviceKey: SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY, limit: 20 });
+  } catch (e) {
+    if (e instanceof Error && e.message === RATE_LIMIT_ERROR) { sendRateLimited(res); return; }
+    throw e;
   }
 
   if (!apiKey) {

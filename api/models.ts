@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveApiKey } from './_lib/apiKey.js';
+import { resolveRequestScope } from './_lib/requestScope.js';
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
 
@@ -30,6 +31,16 @@ async function fetchModels(url: string, apiKey: string) {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
     res.status(405).json({ error: 'Method Not Allowed' });
+    return;
+  }
+
+  // 模型清单查询走系统额度，需认证（demo 亦可），防匿名滥用/信息探测
+  const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
+  const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+  try {
+    await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+  } catch (e: unknown) {
+    res.status(401).json({ error: e instanceof Error ? e.message : 'Authentication required' });
     return;
   }
 

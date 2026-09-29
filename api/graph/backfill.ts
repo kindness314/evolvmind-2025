@@ -1,6 +1,7 @@
 import { buildKnowledgeNodeEmbeddingText, generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
 import { resolveRequestScope } from '../_lib/requestScope.js';
 import { resolveApiKey } from '../_lib/apiKey.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from '../_lib/rateLimit.js';
 // Vercel Hobby 默认函数时长 10s, 批量回填可能串行处理多行, 需留出余量
 export const maxDuration = 60;
 
@@ -39,6 +40,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (e: unknown) {
     res.status(401).json({ error: e instanceof Error ? e.message : 'Authentication required' });
     return;
+  }
+
+  // 限流(安全审计): 超限 429;RPC 故障放行
+  try {
+    await rateLimitOrThrow({ req, scope: requestScope, supabaseUrl: SUPABASE_URL, serviceKey: SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY, limit: 10 });
+  } catch (e) {
+    if (e instanceof Error && e.message === RATE_LIMIT_ERROR) { sendRateLimited(res); return; }
+    throw e;
   }
 
   const requestSupabaseKey = requestScope.accessToken ? SUPABASE_ANON_KEY : supabaseKey;

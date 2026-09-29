@@ -5,6 +5,7 @@
 import { generateEmbedding, buildEmbeddingText, type VercelRequest, type VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope } from './_lib/requestScope.js';
 import { resolveApiKey } from './_lib/apiKey.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from './_lib/rateLimit.js';
 // Vercel Hobby 默认函数时长 10s, embedding 上游调用需留出余量
 export const maxDuration = 60;
 
@@ -33,6 +34,13 @@ async function finalizeIfComplete(updateUrl: string, headers: Record<string, str
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'GET') {
+    // 服务状态探测：hasKey 同时认可自定义 X-Api-Key 与服务端环境 Key（实际调用还会回退到 MINIMAX_API_KEY）
+    const hasKey = Boolean(resolveApiKey(req) || process.env.MINIMAX_API_KEY || process.env.MINIMAX_CHAT_API_KEY);
+    res.status(200).json({ ok: true, route: '/api/embed', hasKey });
+    return;
+  }
+
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method Not Allowed' });
     return;
@@ -58,6 +66,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  // 限流(安全审计): 超限 429;RPC 故障放行
+  try {
+    await rateLimitOrThrow({ req, scope: requestScope, supabaseUrl: SUPABASE_URL, serviceKey: SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY, limit: 30 });
+  } catch (e) {
+    if (e instanceof Error && e.message === RATE_LIMIT_ERROR) { sendRateLimited(res); return; }
+    throw e;
+  }
+
   const requestSupabaseKey = requestScope.accessToken ? SUPABASE_ANON_KEY : supabaseKey;
   const headers = {
     'Content-Type': 'application/json',
@@ -75,7 +91,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const scopeQuery = requestScope.isDemo
       ? 'user_id=is.null'
       : `user_id=eq.${encodeURIComponent(requestScope.scopeId)}`;
-    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${capturedId}&${scopeQuery}&select=id,title,summary,content,tags&limit=1`;
+    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${encodeURIComponent(capturedId)}&${scopeQuery}&select=id,title,summary,content,tags&limit=1`;
     const queryResp = await fetch(queryUrl, { headers });
 
     if (!queryResp.ok) {
@@ -92,7 +108,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const row = rows[0];
     // 标记处理中: 先于耗时操作写入, 刷新后仍可见"处理中"
-    updateUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${capturedId}`;
+    // scope 过滤不可省: demo 走 service-role 绕过 RLS, 必须限定当前 scope 防止按 id 越权写
+    updateUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/captured_info?id=eq.${encodeURIComponent(capturedId)}&${scopeQuery}`;
     await fetch(updateUrl, {
       method: 'PATCH',
       headers,

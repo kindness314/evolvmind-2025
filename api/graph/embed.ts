@@ -1,6 +1,7 @@
 import { buildKnowledgeNodeEmbeddingText, generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
 import { resolveRequestScope } from '../_lib/requestScope.js';
 import { resolveApiKey } from '../_lib/apiKey.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from '../_lib/rateLimit.js';
 // Vercel Hobby 默认函数时长 10s, 节点 embedding 批量调用需留出余量
 export const maxDuration = 60;
 
@@ -34,6 +35,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  // 限流(安全审计): 超限 429;RPC 故障放行
+  try {
+    await rateLimitOrThrow({ req, scope: requestScope, supabaseUrl: SUPABASE_URL, serviceKey: SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY, limit: 30 });
+  } catch (e) {
+    if (e instanceof Error && e.message === RATE_LIMIT_ERROR) { sendRateLimited(res); return; }
+    throw e;
+  }
+
   const requestSupabaseKey = requestScope.accessToken ? SUPABASE_ANON_KEY : supabaseKey;
   const headers = {
     'Content-Type': 'application/json',
@@ -48,7 +57,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const scopeQuery = `scope_id=eq.${encodeURIComponent(requestScope.scopeId)}`;
-    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/knowledge_nodes?id=eq.${nodeId}&${scopeQuery}&select=id,name,normalized_name,kind,aliases,metadata&limit=1`;
+    const queryUrl = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/knowledge_nodes?id=eq.${encodeURIComponent(nodeId)}&${scopeQuery}&select=id,name,normalized_name,kind,aliases,metadata&limit=1`;
     const queryResp = await fetch(queryUrl, { headers });
 
     if (!queryResp.ok) {
@@ -72,7 +81,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { embedding, model } = await generateEmbedding({ text, apiKey });
     const embeddingStr = `[${embedding.join(',')}]`;
 
-    const updateResp = await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/knowledge_nodes?id=eq.${nodeId}`, {
+    const updateResp = await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/knowledge_nodes?id=eq.${encodeURIComponent(nodeId)}&${scopeQuery}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ embedding: embeddingStr }),

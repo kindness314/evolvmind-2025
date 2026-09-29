@@ -10,6 +10,7 @@
  */
 import { generateEmbedding, type VercelRequest, type VercelResponse } from '../_lib/embedding.js';
 import { resolveRequestScope } from '../_lib/requestScope.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from '../_lib/rateLimit.js';
 import { resolveApiKey } from '../_lib/apiKey.js';
 import { cosineSimilarity } from '../_lib/similarity.js';
 
@@ -65,6 +66,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const supabaseKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
   try {
     const requestScope = await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+    // 限流(安全审计): 超限抛 RATE_LIMIT_ERROR 由外层 catch 转 429;RPC 故障放行
+    await rateLimitOrThrow({ req, scope: requestScope, supabaseUrl: SUPABASE_URL, serviceKey: supabaseKey, limit: 10 });
     const queryKey = requestScope.accessToken || supabaseKey;
     const headers = {
       apikey: SUPABASE_ANON_KEY,
@@ -140,7 +143,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).json({ merges });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
+    if (message === RATE_LIMIT_ERROR) { sendRateLimited(res); return; }
     const status = message === 'Authentication required' || message === 'Invalid authentication token' ? 401 : 500;
     res.status(status).json({ error: status === 401 ? 'Unauthorized' : 'Disambiguate failed', detail: message });
-  }
-}
+  }}

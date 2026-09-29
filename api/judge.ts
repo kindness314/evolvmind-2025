@@ -19,10 +19,12 @@
 import type { VercelRequest, VercelResponse } from './_lib/embedding.js';
 import { resolveRequestScope } from './_lib/requestScope.js';
 import { resolveApiKey } from './_lib/apiKey.js';
+import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from './_lib/rateLimit.js';
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 function safeJsonParse(text: string): unknown {
   try { return JSON.parse(text); } catch { return null; }
@@ -185,11 +187,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // 发布门禁 4: 评估端点也消耗 LLM，Demo（body.demo）或真实 Bearer 才允许调用
+  let requestScope;
   try {
-    await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+    requestScope = await resolveRequestScope({ req, supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
   } catch (e: unknown) {
     res.status(401).json({ error: e instanceof Error ? e.message : 'Authentication required' });
     return;
+  }
+
+  // 限流(安全审计): 超限 429;RPC 故障放行
+  try {
+    await rateLimitOrThrow({ req, scope: requestScope, supabaseUrl: SUPABASE_URL, serviceKey: SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY, limit: 10 });
+  } catch (e) {
+    if (e instanceof Error && e.message === RATE_LIMIT_ERROR) { sendRateLimited(res); return; }
+    throw e;
   }
 
   const apiKey = resolveApiKey(req);
