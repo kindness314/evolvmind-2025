@@ -2,6 +2,7 @@ import { motion } from 'motion/react';
 import { Loader2, Plus, Sparkles, Bell, Eye, Tag, X, CalendarRange, TrendingUp, TrendingDown, Lightbulb, ArrowRight, Layers, BookOpen } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { fetchSummary, type SummaryResponse, type SummaryPeriod } from '../../lib/summarize';
+import { DateSegmentInput } from './ui/date-text-input';
 import { fetchRecommendations, type Recommendation } from '../../lib/recommend';
 
 type HomeDestination = 'capture' | 'knowledge' | 'item-detail';
@@ -15,48 +16,121 @@ interface HomePageProps {
 /** 首页双模块切换: 推荐 / 总结 */
 type HomeTab = 'recs' | 'summary';
 
+type RecRange = 'all' | '7d' | '30d' | 'custom';
+
+/** 本地时区 YYYY-MM-DD（date input 值） */
+const fmtLocalDate = (d: Date): string => {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+
+/** 时间范围选择: 快捷档 + 自选起止日期（自选时展开两个 date input） */
+function TimeRangePicker({ value, options, onChange, since, until, onSinceChange, onUntilChange }: {
+  value: string;
+  options: { key: string; label: string }[];
+  onChange: (key: string) => void;
+  since: string;
+  until: string;
+  onSinceChange: (v: string) => void;
+  onUntilChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap justify-end">
+      <div className="flex items-center gap-1 bg-gray-100 p-0.5 rounded-lg">
+        {options.map((o) => (
+          <button
+            key={o.key}
+            onClick={() => onChange(o.key)}
+            className={`px-2.5 py-0.5 text-xs transition-all ${value === o.key ? 'bg-white text-brand font-medium shadow-sm rounded-md' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      {value === 'custom' && (
+        <div className="flex items-center gap-1 text-[11px] text-gray-500">
+          <DateSegmentInput
+            value={since}
+            max={until}
+            onCommit={onSinceChange}
+            ariaLabel="开始日期"
+            className="px-1.5 py-0.5 text-[11px]"
+          />
+          <span>至</span>
+          <DateSegmentInput
+            value={until}
+            min={since}
+            max={fmtLocalDate(new Date())}
+            onCommit={onUntilChange}
+            ariaLabel="结束日期"
+            className="px-1.5 py-0.5 text-[11px]"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function HomePage({ onNavigate, active }: HomePageProps) {
   const [homeTab, setHomeTab] = useState<HomeTab>('recs');
   const [summaryPeriod, setSummaryPeriod] = useState<SummaryPeriod>('7d');
+  const [summarySince, setSummarySince] = useState(() => fmtLocalDate(new Date(Date.now() - 7 * 86400000)));
+  const [summaryUntil, setSummaryUntil] = useState(() => fmtLocalDate(new Date()));
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [recsLoading, setRecsLoading] = useState(false);
+  const [recRange, setRecRange] = useState<RecRange>('all');
+  const [recSince, setRecSince] = useState(() => fmtLocalDate(new Date(Date.now() - 7 * 86400000)));
+  const [recUntil, setRecUntil] = useState(() => fmtLocalDate(new Date()));
   const [dismissedRecIds, setDismissedRecIds] = useState<Set<string>>(new Set());
   const [clickedRecIds, setClickedRecIds] = useState<Set<string>>(new Set());
   const [expandedRecId, setExpandedRecId] = useState<string | null>(null);
   const [summaryDetailExpanded, setSummaryDetailExpanded] = useState(false);
 
+  const summaryParams = summaryPeriod === 'custom'
+    ? { period: summaryPeriod, since: summarySince, until: summaryUntil }
+    : { period: summaryPeriod };
+  // 推荐时间范围 → 候选池过滤参数（全部=不传, 服务端默认最近 40 条）
+  const recRangeParams: { since?: string; until?: string } =
+    recRange === '7d' ? { since: fmtLocalDate(new Date(Date.now() - 7 * 86400000)) }
+    : recRange === '30d' ? { since: fmtLocalDate(new Date(Date.now() - 30 * 86400000)) }
+    : recRange === 'custom' ? { since: recSince, until: recUntil }
+    : {};
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       setSummaryLoading(true);
-      const result = await fetchSummary({ period: summaryPeriod });
+      const result = await fetchSummary(summaryParams);
       if (!cancelled) { setSummary(result); setSummaryLoading(false); }
     };
     load();
     return () => { cancelled = true; };
-  }, [summaryPeriod]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summaryPeriod, summarySince, summaryUntil]);
 
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       setRecsLoading(true);
-      const result = await fetchRecommendations({ dismissedIds: [...dismissedRecIds], clickedIds: [...clickedRecIds] });
+      const result = await fetchRecommendations({ dismissedIds: [...dismissedRecIds], clickedIds: [...clickedRecIds], ...recRangeParams });
       if (!cancelled) { setRecommendations(result.recommendations); setRecsLoading(false); }
     };
     load();
     return () => { cancelled = true; };
-  }, [dismissedRecIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dismissedRecIds, recRange, recSince, recUntil]);
 
   // keep-alive: 从其他页切回首页时静默刷新
   const prevActiveRef = useRef<boolean | undefined>(undefined);
   useEffect(() => {
     if (prevActiveRef.current === false && active === true) {
-      fetchSummary({ period: summaryPeriod }).then(setSummary);
-      fetchRecommendations({ dismissedIds: [...dismissedRecIds], clickedIds: [...clickedRecIds] }).then((r) => setRecommendations(r.recommendations));
+      fetchSummary(summaryParams).then(setSummary);
+      fetchRecommendations({ dismissedIds: [...dismissedRecIds], clickedIds: [...clickedRecIds], ...recRangeParams }).then((r) => setRecommendations(r.recommendations));
     }
-  }, [active, summaryPeriod, dismissedRecIds, clickedRecIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, summaryPeriod, summarySince, summaryUntil, dismissedRecIds, clickedRecIds, recRange, recSince, recUntil]);
 
   const tabBase = 'flex-1 flex items-center justify-center gap-1.5 py-2 text-sm font-medium transition-all';
   const tabActive = 'bg-white text-brand shadow-card';
@@ -108,7 +182,19 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
       <div className="flex-1 overflow-y-auto px-4 pb-20">
         {homeTab === 'recs' ? (
           /* ===== 推荐卡片 ===== */
-          recsLoading ? (
+          <>
+          <div className="flex justify-end mb-3">
+            <TimeRangePicker
+              value={recRange}
+              options={[{ key: 'all', label: '全部' }, { key: '7d', label: '7 天' }, { key: '30d', label: '30 天' }, { key: 'custom', label: '自选' }]}
+              onChange={(k) => setRecRange(k as RecRange)}
+              since={recSince}
+              until={recUntil}
+              onSinceChange={setRecSince}
+              onUntilChange={setRecUntil}
+            />
+          </div>
+          {recsLoading ? (
             <div className="flex flex-col items-center justify-center py-12">
               <Loader2 className="w-8 h-8 text-brand animate-spin mb-2" />
               <p className="text-base text-gray-400">正在生成推荐...</p>
@@ -221,7 +307,8 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
             <div className="text-center py-12">
               <p className="text-base text-gray-400">暂无推荐</p>
             </div>
-          )
+          )}
+          </>
         ) : (
           /* ===== 总结卡片 ===== */
           summaryLoading ? (
@@ -233,21 +320,16 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
             <div className="space-y-3">
               {/* 周期切换 */}
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-700">近期总结</span>
-                <div className="flex items-center gap-1 bg-gray-100 p-0.5 rounded-lg">
-                  <button
-                    onClick={() => setSummaryPeriod('7d')}
-                    className={`px-2.5 py-0.5 text-xs transition-all ${summaryPeriod === '7d' ? 'bg-white text-brand font-medium shadow-sm rounded-md' : 'text-gray-500 hover:text-gray-700'}`}
-                  >
-                    7 天
-                  </button>
-                  <button
-                    onClick={() => setSummaryPeriod('30d')}
-                    className={`px-2.5 py-0.5 text-xs transition-all ${summaryPeriod === '30d' ? 'bg-white text-brand font-medium shadow-sm rounded-md' : 'text-gray-500 hover:text-gray-700'}`}
-                  >
-                    30 天
-                  </button>
-                </div>
+                <span className="text-sm font-medium text-gray-700 flex-none whitespace-nowrap">近期总结</span>
+                <TimeRangePicker
+                  value={summaryPeriod}
+                  options={[{ key: '7d', label: '7 天' }, { key: '30d', label: '30 天' }, { key: 'custom', label: '自选' }]}
+                  onChange={(k) => setSummaryPeriod(k as SummaryPeriod)}
+                  since={summarySince}
+                  until={summaryUntil}
+                  onSinceChange={setSummarySince}
+                  onUntilChange={setSummaryUntil}
+                />
               </div>
 
               {/* Stats bar */}
@@ -474,15 +556,31 @@ export function HomePage({ onNavigate, active }: HomePageProps) {
             <div className="bg-card border border-gray-100 p-3 rounded-xl shadow-card">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-400">总结暂不可用</span>
-                <div className="flex items-center gap-1 bg-gray-100 p-0.5 rounded-lg">
-                  <button onClick={() => setSummaryPeriod('7d')} className={`px-2 py-0.5 text-xs ${summaryPeriod === '7d' ? 'bg-white text-brand font-medium rounded-md shadow-sm' : 'text-gray-500'}`}>7 天</button>
-                  <button onClick={() => setSummaryPeriod('30d')} className={`px-2 py-0.5 text-xs ${summaryPeriod === '30d' ? 'bg-white text-brand font-medium rounded-md shadow-sm' : 'text-gray-500'}`}>30 天</button>
-                </div>
+                <TimeRangePicker
+                  value={summaryPeriod}
+                  options={[{ key: '7d', label: '7 天' }, { key: '30d', label: '30 天' }, { key: 'custom', label: '自选' }]}
+                  onChange={(k) => setSummaryPeriod(k as SummaryPeriod)}
+                  since={summarySince}
+                  until={summaryUntil}
+                  onSinceChange={setSummarySince}
+                  onUntilChange={setSummaryUntil}
+                />
               </div>
             </div>
           ) : (
-            <div className="text-center py-12">
-              <p className="text-base text-gray-400">暂无数据可总结</p>
+            <div className="text-center py-12 space-y-3">
+              <div className="flex justify-center">
+                <TimeRangePicker
+                  value={summaryPeriod}
+                  options={[{ key: '7d', label: '7 天' }, { key: '30d', label: '30 天' }, { key: 'custom', label: '自选' }]}
+                  onChange={(k) => setSummaryPeriod(k as SummaryPeriod)}
+                  since={summarySince}
+                  until={summaryUntil}
+                  onSinceChange={setSummarySince}
+                  onUntilChange={setSummaryUntil}
+                />
+              </div>
+              <p className="text-base text-gray-400">该时间范围内暂无数据可总结</p>
             </div>
           )
         )}

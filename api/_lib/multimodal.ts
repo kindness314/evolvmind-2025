@@ -61,35 +61,44 @@ const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
  * 返回识别的文字/内容描述（OCR/截图/文档图）。失败返回 ''。
  */
 export async function extractImageText(buffer: Buffer, mime: string, customKey = ''): Promise<string> {
-  const apiKey = customKey || process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
-  if (!apiKey) return '';
-  const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
-  const model = process.env.MINIMAX_VISION_MODEL || 'GLM-4.5V';
+  // key 回退链（与 embedding 同理）：专用/自定义 key -> 环境 CHAT -> 环境 API
+  const keysToTry = Array.from(new Set([customKey, process.env.MINIMAX_CHAT_API_KEY || '', process.env.MINIMAX_API_KEY || ''].map((k) => k.trim()).filter(Boolean)));
+  if (!keysToTry.length) return '';
+  const baseUrl = (process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '');
+  const models = Array.from(new Set([process.env.MINIMAX_VISION_MODEL || 'GLM-4.5V', 'MiniMax-VL-01']));
   const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
-  try {
-    const resp = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: '识别这张图片。若含文字，忠实转写图片中的文字内容；若是截图/文档/图表，提取其中的文本。只用中文或原文简明输出识别到的内容，不要解释。' },
-              { type: 'image_url', image_url: { url: dataUrl } },
+  for (const apiKey of keysToTry) {
+    for (const model of models) {
+      try {
+        const resp = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: '识别这张图片。若含文字，忠实转写图片中的文字内容；若是截图/文档/图表，提取其中的文本；若是普通图片，简要描述画面内容。只用中文或原文简明输出识别到的内容，不要解释。' },
+                  { type: 'image_url', image_url: { url: dataUrl } },
+                ],
+              },
             ],
-          },
-        ],
-      }),
-    });
-    if (!resp.ok) return '';
-    const json = (await resp.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
-    const content = json.choices?.[0]?.message?.content;
-    return typeof content === 'string' ? content : '';
-  } catch {
-    return '';
+          }),
+        });
+        if (!resp.ok) {
+          console.warn(`[vision] ${model} HTTP ${resp.status}（换 key/模型重试）`);
+          continue;
+        }
+        const json = (await resp.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
+        const content = json.choices?.[0]?.message?.content;
+        if (typeof content === 'string' && content.trim()) return content;
+      } catch (e) {
+        console.warn(`[vision] ${model} 调用失败:`, e instanceof Error ? e.message : e);
+      }
+    }
   }
+  return '';
 }
 
 /** 图片 MIME 判断（供后端按 mime 路由到 vision 提取） */

@@ -56,3 +56,26 @@ export function clearCustomApiKey(): void {
   localStorage.removeItem(STORAGE_KEY_VALUE);
   localStorage.setItem(STORAGE_ENABLED_KEY, 'false');
 }
+
+// ---------- 图片语义识别（vision）专用 Key（可选，空则回退主 Key / 系统 Key） ----------
+const VISION_ENABLED_KEY = 'evolvmind_vision_key_enabled';
+const VISION_KEY_VALUE = 'evolvmind_vision_key_value';
+
+/** 读取 vision 专用 key；未设置返回 '' */
+export function getVisionApiKey(): string {
+  if (localStorage.getItem(VISION_ENABLED_KEY) !== 'true') return '';
+  const raw = localStorage.getItem(VISION_KEY_VALUE);
+  return raw ? deobfuscate(raw) : '';
+}
+
+/** 设置 vision 专用 key（空则清除） */
+export function setVisionApiKey(value: string): void {
+  const cleaned = value.trim();
+  if (cleaned) {
+    localStorage.setItem(VISION_KEY_VALUE, obfuscate(cleaned));
+    localStorage.setItem(VISION_ENABLED_KEY, 'true');
+  } else {
+    localStorage.removeItem(VISION_KEY_VALUE);
+    localStorage.setItem(VISION_ENABLED_KEY, 'false');
+  }
+}

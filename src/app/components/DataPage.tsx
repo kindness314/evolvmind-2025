@@ -3,6 +3,7 @@ import { Search, Plus, Loader2, FileText, Image as ImageIcon, Mic, File, Pin, Ch
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { toast } from 'sonner';
 import { supabase } from '../../lib/supabase';
+import { cleanupCaptureRefs } from '../../lib/captureRefs';
 import { semanticSearch, generateEmbeddingForRow, type SearchResult } from '../../lib/search';
 import { requestKnowledgeNodeBackfill } from '../../lib/graphSearch';
 import { retryCapturedItem } from '../../lib/process';
@@ -496,14 +497,22 @@ export function DataPage({ onNavigate }: DataPageProps) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     try {
-      const { data: capturedInfo, error } = await supabase
-        .from('captured_info')
-        .select(CAPTURED_COLUMNS)
-        .abortSignal(controller.signal)
-        .order('is_pinned', { ascending: false })
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      // 分页拉全: PostgREST max_rows=1000 会静默截断(超过 1000 条记录后列表丢尾部)
+      const capturedRows: InfoRow[] = [];
+      for (let from = 0; ; from += 1000) {
+        const { data: page, error: pageError } = await supabase
+          .from('captured_info')
+          .select(CAPTURED_COLUMNS)
+          .abortSignal(controller.signal)
+          .order('is_pinned', { ascending: false })
+          .order('created_at', { ascending: false })
+          .range(from, from + 999);
+        if (pageError) throw pageError;
+        if (!page || page.length === 0) break;
+        capturedRows.push(...(page as typeof capturedRows));
+        if (page.length < 1000) break;
+      }
+      const capturedInfo = capturedRows;
 
       if (capturedInfo) {
         const reconciled = reconcileStatuses(capturedInfo);
@@ -691,6 +700,8 @@ export function DataPage({ onNavigate }: DataPageProps) {
         .in('id', ids);
 
       if (error) throw error;
+      // 同步清理节点/关系里的捕获 id 引用, 防止计数虚高(悬空引用)
+      await cleanupCaptureRefs(ids);
       await fetchData();
       exitMultiSelect();
     } catch (error) {

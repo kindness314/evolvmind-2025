@@ -44,8 +44,12 @@ export async function fetchRecommendations(params: {
   dismissedIds?: string[];
   /** 用户点击过的推荐 ID（正反馈信号，服务端 +0.5 加权） */
   clickedIds?: string[];
+  /** 自定义时间范围起始 'YYYY-MM-DD'（与 until 一起限定推荐候选池） */
+  since?: string;
+  /** 自定义时间范围结束 'YYYY-MM-DD' */
+  until?: string;
 }): Promise<RecommendResponse> {
-  const { dismissedIds = [], clickedIds = [] } = params;
+  const { dismissedIds = [], clickedIds = [], since, until } = params;
 
   try {
     const isDemo = localStorage.getItem('demo_auth') === 'true';
@@ -63,6 +67,8 @@ export async function fetchRecommendations(params: {
         demo: isDemo,
         dismissed_ids: dismissedIds,
         clicked_ids: clickedIds,
+        since,
+        until,
       }),
     });
 

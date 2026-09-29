@@ -8,6 +8,7 @@ import { analyzeAndPersist } from '../../lib/process';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { MAX_FILE_SIZE, isSupportedFile, type CaptureMode } from '../../lib/uploadValidation';
+import { getApiAuthHeaders } from '../../lib/apiAuth';
 
 
 /** 读取 txt/md 文本文件的真实正文（作为 content 供总结/图谱）；失败返回空字符串 */
@@ -48,21 +49,14 @@ async function recognizeImageText(file: File): Promise<string> {
   }
 }
 
-/** 调后端提取 pdf/docx 正文（scope 认证：demo 传 demo:true，真实传 Bearer token）；失败返回空字符串 */
+/** 调后端提取正文（pdf/docx 或图片 vision/语音 ASR）；失败返回空字符串。认证与自定义 Key 统一走 getApiAuthHeaders */
 async function extractDocumentText(storagePath: string, fileName: string, mimeType: string): Promise<string> {
   try {
-    const { data: { session } } = await supabase.auth.getSession();
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const body: Record<string, unknown> = { storage_path: storagePath, file_name: fileName, mime_type: mimeType };
-    if (!session?.access_token) {
-      body.demo = true;
-    } else {
-      headers.Authorization = `Bearer ${session.access_token}`;
-    }
+    const headers = await getApiAuthHeaders();
     const resp = await fetch('/api/documents/extract', {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: JSON.stringify({ storage_path: storagePath, file_name: fileName, mime_type: mimeType, demo: localStorage.getItem('demo_auth') === 'true' }),
     });
     if (!resp.ok) return '';
     const data = (await resp.json()) as { ok?: boolean; text?: string };
@@ -294,7 +288,11 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
         // 注意：此处 await 串行完成，避免和保存后的摘要/图谱/向量并发导致 MiniMax QPM(每分钟请求)超限(429)。
         let fileText = '';
         if (mode === 'photo') {
-          fileText = textInput; // OCR 文字（可能为空，则 fallback 元数据）
+          fileText = textInput; // 浏览器本地 OCR 文字
+          if (!fileText.trim()) {
+            // OCR 无结果（多为内容图/截图无文字）-> vision 语义识别（GLM-4.5V，专用 Key 见个人中心）
+            fileText = await extractDocumentText(filePath, file.name, file.type || '');
+          }
         } else if (isPlainTextFile(file)) {
           fileText = await readTextFile(file);
         } else if (isPdfDocxFile(file)) {

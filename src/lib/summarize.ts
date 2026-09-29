@@ -5,7 +5,7 @@
 
 import { supabase } from './supabase';
 
-export type SummaryPeriod = '7d' | '30d';
+export type SummaryPeriod = '7d' | '30d' | 'custom';
 
 export interface SummaryTheme {
   name: string;
@@ -83,8 +83,12 @@ export interface SummaryResponse {
  */
 export async function fetchSummary(params: {
   period: SummaryPeriod;
+  /** period === 'custom' 时的起始日期 'YYYY-MM-DD'（必填） */
+  since?: string;
+  /** period === 'custom' 时的结束日期 'YYYY-MM-DD'（缺省为今天） */
+  until?: string;
 }): Promise<SummaryResponse> {
-  const { period } = params;
+  const { period, since, until } = params;
 
   try {
     const isDemo = localStorage.getItem('demo_auth') === 'true';
@@ -98,7 +102,7 @@ export async function fetchSummary(params: {
     const resp = await fetch('/api/summarize', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ period, demo: isDemo }),
+      body: JSON.stringify({ period, since, until, demo: isDemo }),
     });
 
     if (!resp.ok) {

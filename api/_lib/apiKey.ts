@@ -35,3 +35,16 @@ export function isCustomKey(req: VercelRequest): boolean {
   const custom = Array.isArray(raw) ? raw[0] : raw;
   return typeof custom === 'string' && custom.trim().length > 0;
 }
+
+/** 图片语义识别专用 Key 请求头名 */
+export const VISION_KEY_HEADER = 'x-vision-key';
+
+/** 解析 vision 请求 key：专用头 -> 主自定义 key -> 环境变量（与 resolveApiKey 同回退链） */
+export function resolveVisionKey(req: VercelRequest): string {
+  const raw = req.headers[VISION_KEY_HEADER];
+  const vision = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof vision === 'string' && vision.trim().length > 0) {
+    return vision.trim();
+  }
+  return resolveApiKey(req);
+}

@@ -3,6 +3,7 @@ import { ArrowLeft, Pin, Trash2, FileText, Image as ImageIcon, Mic, File, Sparkl
 import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { supabase } from '../../lib/supabase';
+import { cleanupCaptureRefs } from '../../lib/captureRefs';
 import { retryCapturedItem } from '../../lib/process';
 
 interface ItemDetailPageProps {
@@ -197,6 +198,8 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
         .eq('id', item.id);
 
       if (error) throw error;
+      // 同步清理节点/关系里的捕获 id 引用, 防止计数虚高(悬空引用)
+      await cleanupCaptureRefs([item.id]);
       onUpdate?.();
       onBack();
     } catch (error) {

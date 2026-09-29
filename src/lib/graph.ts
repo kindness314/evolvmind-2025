@@ -201,7 +201,7 @@ function normalizeContentToJson(text: string): any {
   return null;
 }
 
-function normalizeName(input: string): string {
+export function normalizeName(input: string): string {
   return (input || '')
     .trim()
     .toLowerCase()
@@ -506,12 +506,19 @@ export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capt
   const currentUser = (await supabase.auth.getUser()).data.user;
   const scopeId = currentUser?.id || '00000000-0000-0000-0000-000000000000';
 
-  const nodesResp = await supabase
-    .from('knowledge_nodes')
-    .select('id,name,normalized_name,kind,aliases,source_captured_ids,val,color')
-    .eq('scope_id', scopeId);
-  if (nodesResp.error) throw nodesResp.error;
-  const existingNodes = (nodesResp.data || []) as DbNode[];
+  // 分页拉全: PostgREST max_rows=1000 会静默截断, 截断后 merge 匹配看不到老节点 → 重复建节点
+  const existingNodes: DbNode[] = [];
+  for (let from = 0; ; from += 1000) {
+    const nodesResp = await supabase
+      .from('knowledge_nodes')
+      .select('id,name,normalized_name,kind,aliases,source_captured_ids,val,color')
+      .eq('scope_id', scopeId)
+      .range(from, from + 999);
+    if (nodesResp.error) throw nodesResp.error;
+    if (!nodesResp.data || nodesResp.data.length === 0) break;
+    existingNodes.push(...(nodesResp.data as DbNode[]));
+    if (nodesResp.data.length < 1000) break;
+  }
 
   const normToNode = new Map<string, DbNode>();
   for (const n of existingNodes) {
@@ -702,12 +709,19 @@ export async function applyGraphToSupabase(params: { graph: ExtractedGraph; capt
     generateEmbeddingForKnowledgeNode(nodeId);
   }
 
-  const linksResp = await supabase
-    .from('knowledge_links')
-    .select('id,source,target,relation_type,evidence_captured_ids')
-    .eq('scope_id', scopeId);
-  if (linksResp.error) throw linksResp.error;
-  const existingLinks = (linksResp.data || []) as DbLink[];
+  // 分页拉全: 同上, 截断会导致去重看不到老边 → 重复建边
+  const existingLinks: DbLink[] = [];
+  for (let from = 0; ; from += 1000) {
+    const linksResp = await supabase
+      .from('knowledge_links')
+      .select('id,source,target,relation_type,evidence_captured_ids')
+      .eq('scope_id', scopeId)
+      .range(from, from + 999);
+    if (linksResp.error) throw linksResp.error;
+    if (!linksResp.data || linksResp.data.length === 0) break;
+    existingLinks.push(...(linksResp.data as DbLink[]));
+    if (linksResp.data.length < 1000) break;
+  }
 
   const linkKey = (source: string, target: string, rel: string) => `${source}::${target}::${rel}`;
   const dedupe = new Map<string, DbLink>();

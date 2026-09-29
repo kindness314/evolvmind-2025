@@ -12,7 +12,7 @@ import { buildHierarchicalGraph, buildSemanticHierarchy, type SuperTopic, type T
 import { loadNodeTopicCache, saveNodeTopicCache, type NodeTopicMap } from '../../lib/nodeTopics';
 import { clusteredTopicLayout } from '../../lib/topicLayout';
 import { fetchSummary } from '../../lib/summarize';
-import { fetchRecommendations, type Recommendation } from '../../lib/recommend';
+import { DateSegmentInput } from './ui/date-text-input';
 interface GraphNode {
   id: string;
   name: string;
@@ -254,6 +254,11 @@ interface NodeDetailState {
 
 export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps) {
   const fgRef = useRef<ForceGraphMethods<GraphNode, GraphLink> | undefined>(undefined);
+  // d3-drag 仅在 ForceGraph 挂载时检测触摸能力(navigator.maxTouchPoints / ontouchstart)决定是否绑定
+  // 触摸拖监听器;DevTools 设备仿真在页面加载后才开启触摸时会漏绑(表现:触摸可平移缩放但拖不动节点)。
+  // 首个真实 touchstart 到达时发现漏绑则重挂载一次 ForceGraph 补绑。
+  const [graphTouchRebindKey, setGraphTouchRebindKey] = useState(0);
+  const touchRebindCheckedRef = useRef(false);
   const graphAreaRef = useRef<HTMLDivElement>(null);
   const viewportFrameRef = useRef<number | null>(null);
   const sidePanelRef = useRef<HTMLDivElement>(null);
@@ -301,13 +306,25 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
         scopeId = ud?.user?.id || scopeId;
       }
       scopeIdRef.current = scopeId;
-      const { data, error } = await supabase
-        .from('topic_labels')
-        .select('cluster_key,name')
-        .eq('scope_id', scopeId)
-        .limit(5000);
+      // 分页拉全: PostgREST max_rows=1000 会把 limit(5000) 静默截为 1000,
+      // 被截掉的节点会全部落进「其他」桶, 导致话题成员数/推荐数虚低(2026-09-27 实测 1060 节点丢 60)
+      const PAGE = 1000;
+      const labelRows: Array<{ cluster_key: string; name: string | null }> = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data: page, error: pageError } = await supabase
+          .from('topic_labels')
+          .select('cluster_key,name')
+          .eq('scope_id', scopeId)
+          .range(from, from + PAGE - 1);
+        if (cancelled) return;
+        if (pageError) { setNodeTopicMap(new Map()); return; }
+        if (!page || page.length === 0) break;
+        labelRows.push(...(page as typeof labelRows));
+        if (page.length < PAGE) break;
+      }
+      const data = labelRows;
       if (cancelled) return;
-      if (error || !data || data.length === 0) {
+      if (data.length === 0) {
         // 表全空：没有一个数据被分类过 → 才触发一次全量兜底分类
         setNodeTopicMap(new Map());
         if (graphData.nodes.length > 0 && !classifyingRef.current) {
@@ -351,9 +368,20 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topicScope, graphData.nodes.length]);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
-  const [timeRange, setTimeRange] = useState<'all' | '7d' | '30d'>('all');
-  // 意外关联（PPR 图桥推荐）：总览层顶部卡片，展示列表/时间线给不了的跨话题传导链
-  const [bridgeInsights, setBridgeInsights] = useState<Recommendation[]>([]);
+  const [timeRange, setTimeRange] = useState<'all' | '7d' | '30d' | 'custom'>('all');
+  // 自选时间范围（YYYY-MM-DD，结束默认今天）
+  const [customSince, setCustomSince] = useState(() => {
+    const d = new Date(Date.now() - 7 * 86400000);
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  });
+  const [customUntil, setCustomUntil] = useState(() => {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  });
+  // 节点推荐面板(可选):按话题层次列出所选时间范围内占比较大的节点,替代原"意外关联"解释卡
+  const [nodeRecOpen, setNodeRecOpen] = useState(false);
   /** 下钻层级：当前钻入的话题 id（null=话题总览层） */
   const [drillTopicId, setDrillTopicId] = useState<number | null>(null);
   /** 下钻层级：当前钻入的大话题 id（null=总览大话题层） */
@@ -710,22 +738,40 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
 
   const displayGraphData = useMemo(() => {
     const centerNodeId = focusedNodeId || selectedNodeIds[0] || null;
-    const cutoffDate = timeRange === 'all' ? null : new Date(Date.now() - (timeRange === '7d' ? 7 : 30) * 86400000);
+    // 时间窗: [rangeStart, rangeEnd); 快捷档为近 N 天, 自选为起止日期(结束日含全天)
+    let rangeStart: Date | null = null;
+    let rangeEnd: Date | null = null;
+    if (timeRange === '7d') rangeStart = new Date(Date.now() - 7 * 86400000);
+    else if (timeRange === '30d') rangeStart = new Date(Date.now() - 30 * 86400000);
+    else if (timeRange === 'custom') {
+      const s = new Date(`${customSince}T00:00:00`);
+      const u = new Date(`${customUntil}T23:59:59.999`);
+      if (!Number.isNaN(s.getTime()) && !Number.isNaN(u.getTime()) && u >= s) {
+        rangeStart = s;
+        rangeEnd = u;
+      }
+    }
+    const inRange = (iso?: string | null) => {
+      if (!rangeStart) return true;
+      if (!iso) return false;
+      const t = new Date(iso).getTime();
+      return t >= rangeStart.getTime() && (!rangeEnd || t <= rangeEnd.getTime());
+    };
 
     // 时间范围内产生的节点 ID
-    const timeNodeIds = cutoffDate
+    const timeNodeIds = rangeStart
       ? new Set(
           graphData.nodes
-            .filter((node) => node.created_at && new Date(node.created_at) >= cutoffDate)
+            .filter((node) => inRange(node.created_at))
             .map((node) => node.id)
         )
       : new Set(graphData.nodes.map((node) => node.id));
 
     // 时间范围内产生的边 ID
-    const timeLinkIds = cutoffDate
+    const timeLinkIds = rangeStart
       ? new Set(
           graphData.links
-            .filter((link) => link.created_at && new Date(link.created_at) >= cutoffDate)
+            .filter((link) => inRange(link.created_at))
             .map((link) => link.id || `${linkEndpointId(link.source)}-${linkEndpointId(link.target)}`)
         )
       : new Set(graphData.links.map((link) => link.id || `${linkEndpointId(link.source)}-${linkEndpointId(link.target)}`));
@@ -948,7 +994,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
       );
     } else {
       visibleIds = new Set(timeNodeIds);
-      visibleLinks = cutoffDate
+      visibleLinks = rangeStart
         ? graphData.links.filter(
             (link) => timeNodeIds.has(linkEndpointId(link.source)) && timeNodeIds.has(linkEndpointId(link.target))
           )
@@ -978,7 +1024,92 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
       newNodeIds: timeNodeIds,
       newLinkIds: timeLinkIds,
     };
-  }, [activeKind, categoryNodeIds, drillSuperId, drillTopicId, focusedNodeId, graphData, nodeById, searchQuery, selectedNodeIds, timeRange, communityAnalysis]);
+  }, [activeKind, categoryNodeIds, drillSuperId, drillTopicId, focusedNodeId, graphData, nodeById, searchQuery, selectedNodeIds, timeRange, customSince, customUntil, communityAnalysis]);
+
+  const timeRangeLabel = timeRange === 'all' ? '全部' : timeRange === '7d' ? '近 7 天' : timeRange === '30d' ? '近 30 天' : `${customSince.slice(5)} 至 ${customUntil.slice(5)}`;
+
+  /** 节点推荐：按当前话题层次分组的高占比节点（记录数排序）。
+   *  总览=按大话题分组 / 下钻大话题=按中话题分组 / 下钻中话题=该话题成员平铺。
+   *  时间范围内节点过少(<3)时放宽到全部时间并标注 relaxed。 */
+  const topicNodeRecs = useMemo(() => {
+    let start: Date | null = null;
+    let end: Date | null = null;
+    if (timeRange === '7d') start = new Date(Date.now() - 7 * 86400000);
+    else if (timeRange === '30d') start = new Date(Date.now() - 30 * 86400000);
+    else if (timeRange === 'custom') {
+      const s = new Date(`${customSince}T00:00:00`);
+      const u = new Date(`${customUntil}T23:59:59.999`);
+      if (!Number.isNaN(s.getTime()) && !Number.isNaN(u.getTime()) && u >= s) { start = s; end = u; }
+    }
+    const inWin = (iso?: string | null): boolean => {
+      if (!start) return true;
+      if (!iso) return false;
+      const t = new Date(iso).getTime();
+      return t >= start.getTime() && (!end || t <= end.getTime());
+    };
+
+    // 当前层次范围: 下钻时只看该话题成员
+    const inScope = (nodeId: string): boolean => {
+      if (drillTopicId !== null) return communityAnalysis.nodeToTopic.get(nodeId) === drillTopicId;
+      if (drillSuperId !== null) return communityAnalysis.nodeToSuper.get(nodeId) === drillSuperId;
+      return true;
+    };
+
+    // 节点关联度(图内边数): 下钻小话题层按「记录数 + 关联数」双指标排序, 推荐更精细
+    const degreeMap = new Map<string, number>();
+    for (const link of graphData.links) {
+      const ls = linkEndpointId(link.source);
+      const lt = linkEndpointId(link.target);
+      degreeMap.set(ls, (degreeMap.get(ls) || 0) + 1);
+      degreeMap.set(lt, (degreeMap.get(lt) || 0) + 1);
+    }
+
+    const collect = (ignoreWindow: boolean) => {
+      const groups = new Map<string, { name: string; color: string; total: number; nodes: { id: string; name: string; count: number; degree: number }[] }>();
+      for (const node of graphData.nodes) {
+        if (!ignoreWindow && !inWin(node.created_at)) continue;
+        if (!inScope(node.id)) continue;
+        const count = node.source_captured_ids?.length ?? 0;
+        if (count < 1 || node.name.trim().length < 2) continue;
+        // 分组键: 总览=大话题; 下钻大话题=中话题; 下钻中话题=单一组
+        let key: string; let gname: string; let gcolor: string;
+        if (drillTopicId !== null) {
+          const tp = communityAnalysis.topics.find((t) => t.communityId === drillTopicId);
+          if (!tp) continue;
+          key = 'topic'; gname = topicDisplayName(drillTopicId, tp.name); gcolor = tp.color;
+        } else if (drillSuperId !== null) {
+          const tid = communityAnalysis.nodeToTopic.get(node.id);
+          const tp = communityAnalysis.topics.find((t) => t.communityId === tid);
+          if (!tp) continue;
+          key = `t${tid}`; gname = topicDisplayName(tp.communityId, tp.name); gcolor = tp.color;
+        } else {
+          const sid = communityAnalysis.nodeToSuper.get(node.id);
+          const sup = communityAnalysis.superTopics.find((s) => s.id === sid);
+          if (!sup || sup.isOther) continue;
+          key = `s${sid}`; gname = superDisplayName(sid!, sup.name); gcolor = sup.color;
+        }
+        let g = groups.get(key);
+        if (!g) { g = { name: gname, color: gcolor, total: 0, nodes: [] }; groups.set(key, g); }
+        g.total += 1;
+        g.nodes.push({ id: node.id, name: node.name, count, degree: degreeMap.get(node.id) || 0 });
+      }
+      return groups;
+    };
+
+    let groups = collect(false);
+    const candidateCount = [...groups.values()].reduce((acc, g) => acc + g.total, 0);
+    const relaxed = start !== null && candidateCount < 3;
+    if (relaxed) groups = collect(true);
+
+    // 下钻小话题层(单一组)放宽到 8 个, 并按记录数→关联数排序; 其余层每组 top 4
+    const perGroup = drillTopicId !== null ? 8 : 4;
+    const list = [...groups.entries()]
+      .map(([key, g]) => ({ key, ...g, nodes: g.nodes.sort((a, b) => (b.count - a.count) || (b.degree - a.degree)).slice(0, perGroup) }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 6);
+    return { groups: list, relaxed };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphData.nodes, graphData.links, timeRange, customSince, customUntil, communityAnalysis, drillSuperId, drillTopicId, superNameMap, topicNameMap]);
 
   // 力导向按实际渲染规模调优：总览层只渲染话题大节点（137），
   // 若按全量 1000 算 charge 会太弱导致节点挤成一堆
@@ -1214,15 +1345,6 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
     setDetailNodeId(null);
   }, []);
 
-  // 加载一次推荐，取 graph_bridge 类型作为「意外关联」卡片（静默失败，不影响图谱）
-  useEffect(() => {
-    let cancelled = false;
-    fetchRecommendations({}).then((r) => {
-      if (cancelled || !r.ok) return;
-      setBridgeInsights(r.recommendations.filter((x) => x.type === 'graph_bridge').slice(0, 3));
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
 
   /** 返回：逐级上溯（中话题 → 大话题 → 总览） */
   const drillBack = useCallback(() => {
@@ -1316,12 +1438,19 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
       if (n?.created_at && new Date(n.created_at).getTime() >= weekAgo) newThisWeek++;
     }
 
+    // 真实记录数: 成员节点 source_captured_ids 的并集(同一记录可关联多个节点, 不能直接累加)
+    const capturedIdSet = new Set<string>();
+    for (const mid of memberIds) {
+      for (const cid of nodeById.get(mid)?.source_captured_ids || []) capturedIdSet.add(cid);
+    }
+    const capturedCount = capturedIdSet.size;
+
     let trends: TopicInsightData['trends'] = [
-      { label: topicName, direction: newThisWeek > 0 ? 'up' : 'stable', detail: newThisWeek > 0 ? `本周新增 ${newThisWeek} 条` : '近期没有新增内容' },
+      { label: topicName, direction: newThisWeek > 0 ? 'up' : 'stable', detail: newThisWeek > 0 ? `本周新增 ${newThisWeek} 个节点` : '近期没有新增内容' },
     ];
     let suggestions: string[] = memberIds.length >= 10
       ? [
-          `你在这个主题记录了 ${memberIds.length} 条内容，建议回顾并整理成自己的体系`,
+          `这个主题已积累 ${memberIds.length} 个知识节点、${capturedCount} 条记录，建议回顾并整理成自己的体系`,
           ...(related.size ? [`与「${[...related][0]}」关联较强，可尝试串起来思考`] : []),
         ]
       : ['内容还比较少，建议多记录一些想法，图谱会更有价值'];
@@ -1358,7 +1487,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
       topicName,
       topicColor,
       memberCount: memberIds.length,
-      capturedCount: memberIds.length,
+      capturedCount,
       newThisWeek,
       relatedTopics: [...related],
       representativeItems: representatives,
@@ -1784,9 +1913,9 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
         </div>
 
         {/* 时间范围选择器 */}
-        <div className="flex items-center gap-1.5 pt-2 border-t border-gray-100">
+        <div className="flex items-center flex-wrap gap-1.5 pt-2 border-t border-gray-100">
           <span className="text-[11px] text-gray-400 flex-none">时间</span>
-          {(['all', '7d', '30d'] as const).map((range) => (
+          {(['all', '7d', '30d', 'custom'] as const).map((range) => (
             <button
               key={range}
               onClick={() => {
@@ -1799,9 +1928,28 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
                   : 'text-gray-500 hover:text-gray-700 border border-transparent'
               }`}
             >
-              {range === 'all' ? '全部' : range}
+              {range === 'all' ? '全部' : range === 'custom' ? '自选' : range}
             </button>
           ))}
+          {timeRange === 'custom' && (
+            <span className="flex items-center gap-1 text-[10px] text-gray-500">
+              <DateSegmentInput
+                value={customSince}
+                max={customUntil}
+                onCommit={setCustomSince}
+                ariaLabel="开始日期"
+                className="px-1 py-0.5 text-[10px]"
+              />
+              <span>至</span>
+              <DateSegmentInput
+                value={customUntil}
+                min={customSince}
+                onCommit={setCustomUntil}
+                ariaLabel="结束日期"
+                className="px-1 py-0.5 text-[10px]"
+              />
+            </span>
+          )}
           {timeRange !== 'all' && displayGraphData.newNodeIds && displayGraphData.nodes.length < graphData.nodes.length ? (
             <span className="text-[10px] text-ai ml-auto">
               新增 {displayGraphData.newNodeIds.size} 节点
@@ -1810,7 +1958,22 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
         </div>
       </div>
 
-      <div ref={graphAreaRef} className="flex-1 min-h-0 relative overflow-hidden bg-slate-50 touch-none">
+      <div ref={graphAreaRef} className="flex-1 min-h-0 relative overflow-hidden bg-slate-50 touch-none"
+        onTouchStartCapture={() => {
+          if (touchRebindCheckedRef.current) return;
+          touchRebindCheckedRef.current = true;
+          const canvas = graphAreaRef.current?.querySelector('canvas');
+          // d3-drag 绑定成功时会将 canvas 的 touch-action 置为 none;不为 none 说明触摸拖监听漏绑
+          if (canvas && getComputedStyle(canvas).touchAction !== 'none') {
+            setGraphTouchRebindKey((k) => k + 1);
+          }
+        }}
+        onPointerDownCapture={(e) => {
+          // 话题列表面板浮在画布上会遮挡节点;用户直接点画布(开始交互)时自动折叠让出视野
+          if (!sidePanelCollapsed && e.target instanceof HTMLCanvasElement) {
+            setSidePanelCollapsed(true);
+          }
+        }}>
         {loading ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-gray-50/80">
             <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-2" />
@@ -1819,19 +1982,56 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
         ) : null}
 
 
-        {/* 意外关联卡片：仅总览层展示（PPR 图桥发现的跨话题传导链） */}
-        {drillSuperId === null && drillTopicId === null && !loading && bridgeInsights.length > 0 ? (
-          <div className="absolute top-3 right-4 z-10 w-[280px] bg-white/95 backdrop-blur border border-indigo-100 shadow-card rounded-2xl px-3 py-2.5">
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-indigo-600 mb-1.5">
-              <Sparkles className="w-3.5 h-3.5" /> 意外关联 · 记录之间的隐藏链
-            </div>
-            {bridgeInsights.map((b) => (
-              <div key={b.id} className="mb-2 last:mb-0">
-                <div className="text-xs font-medium text-gray-800 leading-snug">{b.title}</div>
-                <div className="text-[11px] text-gray-500 leading-snug line-clamp-2 mt-0.5">{b.reason}</div>
+        {/* 节点推荐(可选面板):跟随当前话题层次,列出所选时间范围内占比较大的节点;下钻时避开右上回退面包屑 */}
+        {!loading ? (
+          nodeRecOpen ? (
+            <div className={`absolute ${drillSuperId !== null || drillTopicId !== null ? 'top-14' : 'top-3'} right-4 z-10 w-64 max-h-[calc(100%-4rem)] overflow-y-auto bg-white/95 backdrop-blur border border-gray-100 shadow-card rounded-2xl px-3 py-2.5`}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5 text-[11px] font-medium text-indigo-600">
+                  <Sparkles className="w-3.5 h-3.5" /> 节点推荐 · {topicNodeRecs.relaxed ? '全部时间(范围内较少)' : timeRangeLabel}
+                </div>
+                <button
+                  onClick={() => setNodeRecOpen(false)}
+                  className="p-0.5 text-gray-300 hover:text-gray-500 transition-colors"
+                  aria-label="收起节点推荐"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
-            ))}
-          </div>
+              {topicNodeRecs.groups.length > 0 ? topicNodeRecs.groups.map((g) => (
+                <div key={g.key} className="mb-2.5 last:mb-0">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="w-2 h-2 flex-none shrink-0" style={{ borderRadius: '50%', backgroundColor: g.color }} />
+                    <span className="text-[11px] font-medium text-gray-700 truncate">{g.name}</span>
+                    <span className="text-[10px] text-gray-400 ml-auto flex-none">{g.total} 个节点</span>
+                  </div>
+                  <div className="space-y-0.5">
+                    {g.nodes.map((n) => (
+                      <button
+                        key={n.id}
+                        onClick={() => { setFocusedNodeId(n.id); setSelectedNodeIds([]); setNodeRecOpen(false); }}
+                        className="w-full flex items-center justify-between gap-2 px-1.5 py-1 text-left hover:bg-brand-soft/60 transition-colors rounded-lg"
+                        title="点击聚焦该节点"
+                      >
+                        <span className="text-xs text-gray-700 truncate">{n.name}</span>
+                        <span className="text-[10px] text-brand flex-none">{n.count} 条{drillTopicId !== null && n.degree > 0 ? ` · ${n.degree} 关联` : ''}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )) : (
+                <p className="text-[11px] text-gray-400 py-2">该时间范围内没有值得推荐的节点</p>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => setNodeRecOpen(true)}
+              className={`absolute ${drillSuperId !== null || drillTopicId !== null ? 'top-14' : 'top-3'} right-4 z-10 flex items-center gap-1.5 px-2.5 py-1.5 bg-white/95 backdrop-blur border border-gray-200 shadow-card hover:bg-gray-50 transition-colors text-xs text-gray-600 rounded-xl`}
+              aria-label="展开节点推荐"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-500" /> 节点推荐
+            </button>
+          )
         ) : null}
 
         {(drillSuperId !== null || drillTopicId !== null) ? (
@@ -1858,6 +2058,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
 
         <ForceGraph2D
           ref={fgRef}
+          key={graphTouchRebindKey}
           graphData={displayGraphData as unknown as { nodes: GraphNode[]; links: GraphLink[] }}
           width={dimensions.width}
           height={dimensions.height}
@@ -2215,7 +2416,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
                     <Sparkles className="w-3 h-3" /> 概览
                   </span>
                   <p className="text-[13px] text-gray-700 leading-relaxed">
-                    这里收录了 <b className="text-brand-strong">{topicInsight.memberCount}</b> 条与「{topicInsight.topicName}」相关的内容。
+                    这里有 <b className="text-brand-strong">{topicInsight.memberCount}</b> 个知识节点 · <b className="text-brand-strong">{topicInsight.capturedCount}</b> 条记录，都与「{topicInsight.topicName}」相关。
                     {topicInsight.newThisWeek > 0 ? ` 本周新增了 ${topicInsight.newThisWeek} 条，最近你比较关注这个主题。` : ' 近期暂无新增。'}
                   </p>
                 </div>
@@ -2318,7 +2519,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
         </div>
 
         {!sidePanelCollapsed && (
-        <div ref={sidePanelRef} className="absolute top-14 left-4 w-52 bg-white/90 backdrop-blur-md border border-gray-100 p-3 shadow-card max-h-[calc(100%-4rem)] overflow-y-auto rounded-2xl">
+        <div ref={sidePanelRef} className="absolute top-3 left-4 w-52 bg-white/90 backdrop-blur-md border border-gray-100 p-3 shadow-card max-h-[calc(100%-4rem)] overflow-y-auto rounded-2xl">
           {/* 视图信息：总览 or 下钻 */}
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-xs font-medium text-gray-700">
@@ -2389,7 +2590,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
                         return (
                           <button
                             key={topic.communityId}
-                            onClick={() => (active ? drillBack() : drillIntoTopic(topic.communityId))}
+                            onClick={() => (active ? drillBack() : (drillIntoTopic(topic.communityId), setSidePanelCollapsed(true)))}
                             className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 text-left text-xs transition-colors rounded-lg ${active ? 'bg-brand-soft text-brand-strong' : 'text-gray-600 hover:bg-gray-50'}`}
                             title={active ? '返回中话题列表' : `进入该话题查看 ${memberCount} 个知识点`}
                           >
@@ -2406,7 +2607,7 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
                       return (
                         <button
                           key={sup.id}
-                          onClick={() => (active ? drillBack() : drillIntoSuper(sup.id))}
+                          onClick={() => (active ? drillBack() : (drillIntoSuper(sup.id), setSidePanelCollapsed(true)))}
                           className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 text-left text-xs transition-colors rounded-lg ${active ? 'bg-brand-soft text-brand-strong' : 'text-gray-600 hover:bg-gray-50'}`}
                           title={active ? '返回总览' : `进入该大话题查看 ${sup.memberCount} 个知识点`}
                         >
