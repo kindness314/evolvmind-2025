@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
       # ubuntu-latest 自带 Android SDK,无需 setup-android(v3 会因废弃的 tools 包报错)
       - run: npm ci
       - run: npm run build
