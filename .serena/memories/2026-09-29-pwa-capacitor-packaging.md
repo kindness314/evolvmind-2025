@@ -37,3 +37,10 @@
 2. Capacitor CLI 要 **Node >=22**(workflow 从 20 升 22)。
 3. Capacitor 7 的 variables.gradle sourceCompatibility=**21** -> setup-java 用 **21**(不是 17)。
 最终 workflow:checkout -> node22+java21 -> npm ci -> vite build -> cap sync -> gradlew assembleDebug -> upload artifact。产物 3MB debug APK,保留 90 天。
+
+## 追记3:增量话题回填(2026-09-29)
+- 检查发现: demo 980 节点 topic_labels 全缺(历史清理误删),真实用户 0b47884f 14 节点未分类,159f52bd 117/117 全。
+- 新增 `/api/graph/topicize-backfill`(挂 graph-ops 分发器,不增函数数):scope 内差集→分批 200 LLM 分类→写缓存,幂等,单次上限 10 批(2000 节点),响应带 remaining 供续跑。分类核心抽至 `topicClassify.ts`(topicize 同步复用)。
+- KnowledgePage 挂载时凡有未分类节点即自动触发回填(旧逻辑仅表全空才兜底),完成后重读标签。
+- 已执行: demo 980/980 分类完成,主题数 53,「其他」桶从 253(08-19 基线)降到 **45**。
+- 待观察: 真实用户 0b47884f 的 14 节点等其本人打开知识页时自动回填(需其 Bearer,服务端不能越权代跑)。
