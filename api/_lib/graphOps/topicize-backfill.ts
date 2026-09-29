@@ -61,6 +61,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const scopeId = requestScope.scopeId;
   const urlBase = SUPABASE_URL.replace(/\/$/, '');
 
+  try {
   // 1. 分页拉全 scope 节点（PostgREST 1000 行静默截断，必须分页）
   const allNodes: TopicNodeInput[] = [];
   for (let offset = 0; ; offset += 1000) {
@@ -116,4 +117,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     remaining: missing.length - classified,
     model,
   });
+  } catch (e: unknown) {
+    // LLM/Supabase 网络抖动不拖垮函数实例，明确 500 由前端下轮再试
+    res.status(500).json({ error: 'Backfill failed', detail: e instanceof Error ? e.message : 'Unknown error' });
+  }
 }
