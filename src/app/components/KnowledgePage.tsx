@@ -578,12 +578,14 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
 
   // 分层聚合分析（全量图）：语义主题（LLM）优先；无分类结果时回退模块度话题
   const communityAnalysis = useMemo(() => {
-    if (graphData.nodes.length < COMMUNITY_VIEW_THRESHOLD) {
+    // 语义主题在任意规模都有意义(2026-09-29: 117/14 节点用户因 150 阈值看不到话题层);
+    // 阈值只挡模块度碎片回退(小图上无意义),不挡语义主题
+    const useSemantic = nodeTopicMap.size > 0;
+    if (!useSemantic && graphData.nodes.length < COMMUNITY_VIEW_THRESHOLD) {
       return { superTopics: [] as SuperTopic[], topics: [] as TopicAggregate[], nodeToTopic: new Map<string, number>(), nodeToSuper: new Map<string, number>(), nodeCommunity: new Map<string, { id: number; name: string; color: string }>() };
     }
     const cnodes = graphData.nodes.map((n) => ({ id: n.id, name: n.name, kind: n.kind }));
     const clinks = graphData.links.map((l) => ({ source: linkEndpointId(l.source), target: linkEndpointId(l.target) }));
-    const useSemantic = nodeTopicMap.size > 0;
     const { superTopics, topics, nodeToTopic, nodeToSuper } = useSemantic
       ? buildSemanticHierarchy(cnodes, clinks, nodeTopicMap)
       : buildHierarchicalGraph(cnodes, clinks);
