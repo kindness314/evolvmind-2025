@@ -24,3 +24,10 @@
 - Email OTP 是验证码输入式,无 OAuth 重定向,WebView 内可直接用。
 - Supabase session 存 localStorage,WebView 内持久化正常。
 - android/ 自带 .gitignore(build/、.gradle 等不会入库)。
+
+## 追记:生产部署修复(2026-09-29 深夜)
+- **根因**: Vercel Hobby 单部署 12 函数上限,09-03 起 17 个 API 文件 -> 部署全 ERROR,线上停在 8 月旧版(errorCode=exceeded_serverless_functions_per_deployment,部署阶段才炸,构建日志无提示)。
+- **修复**: api/graph/{embed,backfill,search,topicize,classify-topics,disambiguate} 6 函数移到 `api/_lib/graphOps/`,新增 `api/graph-ops.ts` 静态分发器 + vercel.json 显式重写(URL 不变)。函数 17->12,部署 READY,生产已是 2622cc8。
+- **坑**: Vercel dev 的 Windows 动态段路由 `api/graph/[op].ts` 不生效(请求落到 Vite SPA),改静态文件+重写规避。`GET /api/*` 返回 `{ok,route}` 是刻意健康探针,不是 bug。
+- **冗余**: 同一仓库连了 3 个 Vercel 项目(evolvmind-2025 / -7p31 / -qzhu),每次 push 三份构建。域名 evolvmind-2025.vercel.app 归属原项目;两个后缀项目是多余的,建议删(待用户确认)。
+- **以后加 API 端点前先数函数**: `find api -name "*.ts" -not -path "*_lib*" | wc -l` ≤ 12;超限就往 graph-ops 式分发器里并。
