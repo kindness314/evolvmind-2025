@@ -48,3 +48,6 @@ pnpm-lock.yaml
 scripts/eval-data/
 .vercel
 dist-apk/
+evolvmind-release.keystore
+keystore-credentials.txt
+android/release.keystore
