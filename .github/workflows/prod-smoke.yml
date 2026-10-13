@@ -4,9 +4,15 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: extract (demo)
+      - name: check deployed frontend has swipe-back
         run: |
-          curl -s --connect-timeout 15 -X POST https://evolvmind-2025.vercel.app/api/extract \
-            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"content":"测试:今天学了二分查找,要点是排序后每次折半缩小范围。"}' \
-            -w "\nHTTP %{http_code} in %{time_total}s\n" | head -c 500
+          set -e
+          HTML=$(curl -s https://evolvmind-2025.vercel.app/)
+          echo "$HTML" | grep -o 'src="[^"]*index[^"]*\.js"' | head -2
+          JS=$(echo "$HTML" | grep -o '/assets/[^"]*index[^"]*\.js' | head -1)
+          echo "bundle: $JS"
+          curl -s "https://evolvmind-2025.vercel.app$JS" -o main.js
+          echo "size: $(wc -c < main.js)"
+          grep -c "evolvmind" main.js || true
+          grep -o "pushState" main.js | wc -l
+          grep -o "popstate" main.js | wc -l
