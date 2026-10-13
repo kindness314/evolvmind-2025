@@ -45,6 +45,22 @@ export default function App() {
     checkAuth();
   }, []);
 
+  // 返回手势/返回键:从历史栈恢复页面状态(与 handlePageChange 镜像)
+  // 必须位于所有条件 return 之前(Hooks 顺序恒定)
+  useEffect(() => {
+    history.replaceState({ evolvmind: true, page: 'home', itemId: null }, '');
+    const onPopState = (event: PopStateEvent) => {
+      const state = event.state as { evolvmind?: boolean; page?: Page; itemId?: string | null } | null;
+      if (!state || !state.evolvmind || !state.page) return;
+      setCurrentPage(state.page);
+      setVisitedPages((prev) => (prev.has(state.page!) ? prev : new Set(prev).add(state.page!)));
+      if (state.page === 'item-detail' && state.itemId) setSelectedItemId(state.itemId);
+      if (state.page === 'knowledge') setSelectedKnowledgeNodeId(state.itemId ?? null);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
   const checkAuth = async () => {
     try {
       // 检查演示模式
@@ -112,7 +128,10 @@ export default function App() {
     if (newPage === 'knowledge') {
       setSelectedKnowledgeNodeId(itemId || null);
     }
+    // 移动端侧滑/返回键:每次前进导航压入历史栈,popstate 统一回退
+    history.pushState({ evolvmind: true, page: newPage, itemId: itemId ?? null }, '');
   };
+
 
   // 底部导航项定义（统一渲染，iOS/Material 胶囊高亮）
   const navItems: { page: Page; label: string; icon: typeof Home }[] = [
@@ -143,7 +162,7 @@ export default function App() {
         return selectedItemId ? (
           <ItemDetailPage
             itemId={selectedItemId}
-            onBack={() => handlePageChange('home')}
+            onBack={() => history.back()}
             onUpdate={() => {
               // 删除/编辑/置顶后通知数据页与首页立即增量同步（DataPage 监听 evolvmind:data-changed）
               window.dispatchEvent(new CustomEvent('evolvmind:data-changed'));
