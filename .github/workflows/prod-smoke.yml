@@ -4,9 +4,10 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: extract (demo)
+      - name: edgefn direct
         run: |
-          curl -s --connect-timeout 15 -X POST https://evolvmind-2025.vercel.app/api/extract \
-            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"content":"测试:今天学了二分查找,要点是排序后每次折半缩小范围。"}' \
-            -w "\nHTTP %{http_code} in %{time_total}s\n"
+          curl -s --connect-timeout 15 -X POST https://api.edgefn.net/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer sk-iLUYp3LdYUswCUN8025884215b8e4d4dAb264590B89a538a" \
+            -d '{"model":"MiniMax-M2.5","messages":[{"role":"user","content":"hi"}],"temperature":0}' \
+            -w "\nHTTP %{http_code} in %{time_total}s\n" | head -c 400
