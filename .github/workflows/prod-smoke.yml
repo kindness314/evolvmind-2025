@@ -4,9 +4,9 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: edgefn headers
+      - name: extract (demo)
         run: |
-          curl -sv --connect-timeout 15 -X POST https://api.edgefn.net/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer test" \
-            -d '{}' 2>&1 | grep -E "^< |HTTP|server|x-|via" | head -25
+          curl -s --connect-timeout 15 -X POST https://evolvmind-2025.vercel.app/api/extract \
+            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
+            -d '{"content":"测试:今天学了二分查找,要点是排序后每次折半缩小范围。"}' \
+            -w "\nHTTP %{http_code} in %{time_total}s\n" | head -c 500
