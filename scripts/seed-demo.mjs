@@ -125,11 +125,11 @@ where not exists (
   select 1 from knowledge_links l where l.scope_id = '${S}'::uuid and l.source = s.id and l.target = t.id
 );`);
 
-lines.push(`insert into captured_info (id, user_id, type, title, content, tags, summary, created_at, processed_at, processing_status, embedding_status, graph_status, embedding)
+lines.push(`insert into captured_info (id, type, title, content, tags, summary, created_at, processed_at, processing_status, embedding_status, graph_status, embedding)
 values ${captures.map(([off, title, content, kw, sum], i) => {
   const ts = new Date(now + off * day).toISOString();
   const tagsArr = `{${kw.split(',').map(t => esc(t.trim())).join(',')}}`;
-  return `(gen_random_uuid(), '${S}'::uuid, 'text', '${esc(title)}', '${esc(content)}', '${tagsArr}', '${esc(sum)}', '${ts}', '${ts}', 'completed', 'completed', 'completed', '${embLit(capEmbs[i])}'::vector)`;
+  return `(gen_random_uuid(), 'text', '${esc(title)}', '${esc(content)}', '${tagsArr}', '${esc(sum)}', '${ts}', '${ts}', 'completed', 'completed', 'completed', '${embLit(capEmbs[i])}'::vector)`;
 }).join(',\n')}
 on conflict do nothing;`);
 
@@ -139,7 +139,7 @@ for (const { title, nodeNames } of evMaps) {
   if (!nodeNames?.length) continue;
   lines.push(`update knowledge_nodes n set source_captured_ids = coalesce(n.source_captured_ids, '{}') || c.id
 from captured_info c, (select id, normalized_name from knowledge_nodes where scope_id = '${S}'::uuid and normalized_name = any(array[${nodeNames.map(n => `'${esc(norm(n))}'`).join(',')}])) seed
-where c.user_id = '${S}'::uuid and c.title = '${esc(title)}' and c.created_at > now() - interval '31 days'
+where c.user_id is null and c.title = '${esc(title)}' and c.created_at > now() - interval '31 days'
   and n.id = seed.id
   and not (c.id = any(coalesce(n.source_captured_ids, '{}')));`);
 }
