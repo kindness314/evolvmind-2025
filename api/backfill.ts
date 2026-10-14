@@ -53,7 +53,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const batchSize = typeof req.body?.batch_size === 'number' ? Math.min(req.body.batch_size, 5) : 5;
-  const baseUrl = process.env.MINIMAX_BASE_URL;
+  const baseUrl = process.env.EMBEDDING_BASE_URL || process.env.MINIMAX_BASE_URL;
   const requestSupabaseKey = requestScope.accessToken ? SUPABASE_ANON_KEY : supabaseKey;
   const headers = {
     'Content-Type': 'application/json',
