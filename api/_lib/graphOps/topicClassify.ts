@@ -52,9 +52,16 @@ function extractMessageText(json: unknown): string {
       }
     }
     const msg = obj.message;
+    if (typeof msg === 'string' && msg) return msg;
     if (msg && typeof msg === 'object') {
       const content = (msg as Record<string, unknown>).content;
       if (typeof content === 'string') return content;
+    }
+    // 错误响应体(DeepSeek/OpenAI 风格 {error:{message}} / 硅基流动 {message})——带出便于排障
+    const err = obj.error;
+    if (err && typeof err === 'object') {
+      const em = (err as Record<string, unknown>).message;
+      if (typeof em === 'string' && em) return `[upstream] ${em}`;
     }
   }
   return '';
@@ -94,19 +101,22 @@ export async function classifyNodes(
   opts: { apiKey: string; model: string; baseUrl: string },
 ): Promise<{ map: Record<string, string>; model: string }> {
   const map: Record<string, string> = {};
-  if (nodes.length === 0 || !opts.apiKey) return { map, model: opts.model };
   const urls = Array.from(
     new Set([`${opts.baseUrl.replace(/\/$/, '')}/chat/completions`, `${opts.baseUrl.replace(/\/v1\/?$/, '').replace(/\/$/, '')}/chat/completions`]),
   );
   for (const url of urls) {
     const r = await callChatCompletion(url, opts.apiKey, opts.model, buildPrompt(nodes));
-    if (!r.ok) continue;
+    if (!r.ok || !r.text) console.warn(`[classify] ${url} 失败:`, r.text.slice(0, 160));
     const match = (r.text || '').match(/\{[\s\S]*\}/);
     const parsed = match ? safeJsonParse(match[0]) : null;
     if (!parsed || typeof parsed !== 'object') break;
+    // 键兼容:序号(prompt 要求)/节点名(LLM 常见偏差)/节点 id,任一命中即可
+    const byIndex = new Map(nodes.map((n, i) => [String(i), n]));
+    const byName = new Map(nodes.map(n => [(n.name || '').trim().toLowerCase(), n]));
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      const node = nodes[Number(k)];
-      if (node && typeof v === 'string' && VALID_TOPIC[v]) map[node.id] = v;
+      const key = k.trim();
+      const node = byIndex.get(key) || byName.get(key.toLowerCase()) || nodes.find(n => n.id === key);
+      if (node && typeof v === 'string' && VALID_TOPIC[v.trim()]) map[node.id] = v.trim();
     }
     break;
   }
