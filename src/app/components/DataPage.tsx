@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, Plus, Loader2, FileText, Image as ImageIcon, Mic, File, Pin, CheckSquare, Trash2, Check, X, Sparkles, AlertTriangle, RefreshCw, Tag, ChevronDown } from 'lucide-react';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useBackHandler } from '../../lib/backHandler';
 import { toast } from 'sonner';
 import { supabase } from '../../lib/supabase';
 import { cleanupCaptureRefs } from '../../lib/captureRefs';
@@ -33,6 +34,8 @@ type DataDestination = 'capture' | 'knowledge' | 'item-detail';
 
 interface DataPageProps {
   onNavigate?: (page: DataDestination, itemId?: string) => void;
+  /** keep-alive 可见性: 侧滑拦截仅在本页可见时生效 */
+  active?: boolean;
 }
 
 
@@ -212,7 +215,7 @@ interface RetryAllState {
   running: boolean;
 }
 
-export function DataPage({ onNavigate }: DataPageProps) {
+export function DataPage({ onNavigate, active }: DataPageProps) {
   const [data, setData] = useState<InfoCard[]>([]);
   const [loading, setLoading] = useState(true);
   // O3: photo 列表缩略图 —— 按 storage_path 动态生成 signed URL，生成一次后缓存（ref 防重复请求）
@@ -229,6 +232,17 @@ export function DataPage({ onNavigate }: DataPageProps) {
   const [isBulkActing, setIsBulkActing] = useState(false);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
   const [retryAll, setRetryAll] = useState<RetryAllState | null>(null);
+
+  // 侧滑/返回键:搜索 → 多选模式 → 批量删除确认,逐层退出
+  useBackHandler(
+    () => !!active && (searchQuery !== '' || isMultiSelect || showBulkDeleteConfirm),
+    () => {
+      if (showBulkDeleteConfirm) { setShowBulkDeleteConfirm(false); return true; }
+      if (isMultiSelect) { setIsMultiSelect(false); setSelectedIds(new Set()); return true; }
+      if (searchQuery !== '') { setSearchQuery(''); return true; }
+      return false;
+    }
+  );
   // 增量同步水位线: 最近一次成功同步见过的最大 created_at; null = 尚未建立基线
   const lastSyncRef = useRef<string | null>(null);
   const pollCountRef = useRef(0);
