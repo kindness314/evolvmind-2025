@@ -45,3 +45,11 @@
 - 覆盖: 知识页(搜索→选中→聚焦→下钻)、数据页(删除确认→多选→搜索)、详情页(删除确认→编辑)、捕获页(退出模式)、设置页(资料编辑)。
 - 验证通道: 手机开 USB 调试 + 小米"USB 调试(安全设置)"后,`adb shell input keyevent 4` + `uiautomator dump` 可全自动真机回归(读 text 判页面)。
 - 真机白屏一次: 自动化连点切换页时懒加载 chunk 闪白,瞬态非 bug。
+
+## 六、断点(2026-10-15 凌晨,明日续):手机端知识页白屏
+
+- 现象: v1.0.3(39f7f79)后手机进知识网络页整页白屏(OCR 只有状态栏,连底部导航都没有),App 不崩、仍在后台。浏览器 demo 下知识页正常 → 疑真机/真账号数据相关或懒加载 chunk 经手机代理拉取失败。
+- 已排除: 生产部署正常(39f7f79 Production);返回键处理正常(app 不退出);logcat 无 crash。
+- 断点动作: 正在出 **debug APK**(.github/workflows/debug-apk.yml,WebView 调试可用)——构建中,装上后 `adb forward tcp:9222 localabstract:webview_devtools_remote_*` + chrome://inspect 或 CDP 抓真机控制台,定位白屏报错。注意 debug 包与 release 签名不同,需先卸载(登录态会掉)。
+- 手机调试已就绪: USB 调试+安全设置已开,input 注入可用;platform-tools 在 D:/evolvmind-2025/platform-tools。
+- 备忘: adb exec-out 截图在 git-bash 会 CRLF 损坏,要 `shell screencap -p /sdcard/s.png` + `adb pull`。
