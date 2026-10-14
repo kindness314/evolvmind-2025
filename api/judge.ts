@@ -22,7 +22,7 @@ import { resolveApiKey } from './_lib/apiKey.js';
 import { rateLimitOrThrow, sendRateLimited, RATE_LIMIT_ERROR } from './_lib/rateLimit.js';
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
