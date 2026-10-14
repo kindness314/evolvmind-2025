@@ -4,15 +4,10 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: check deployed frontend has swipe-back
+      - name: overseas + correct model + valid key
         run: |
-          set -e
-          HTML=$(curl -s https://evolvmind-2025.vercel.app/)
-          echo "$HTML" | grep -o 'src="[^"]*index[^"]*\.js"' | head -2
-          JS=$(echo "$HTML" | grep -o '/assets/[^"]*index[^"]*\.js' | head -1)
-          echo "bundle: $JS"
-          curl -s "https://evolvmind-2025.vercel.app$JS" -o main.js
-          echo "size: $(wc -c < main.js)"
-          grep -c "evolvmind" main.js || true
-          grep -o "pushState" main.js | wc -l
-          grep -o "popstate" main.js | wc -l
+          curl -s --connect-timeout 15 -X POST https://api.edgefn.net/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.EDGEFN_TEST_KEY }}" \
+            -d '{"model":"MiniMax-M2.5","messages":[{"role":"user","content":"hi"}]}' \
+            -w "\nHTTP %{http_code} in %{time_total}s\n" | head -c 400
