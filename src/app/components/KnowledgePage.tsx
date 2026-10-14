@@ -1379,12 +1379,11 @@ export function KnowledgePage({ initialNodeId, onNavigate, active }: KnowledgePa
     }, 50);
   }, [drillTopicId, fitAllNodes]);
 
-  // 侧滑/返回键逐层退出:搜索 → 节点详情 → 选中 → 聚焦 → 下钻(中话题→大话题→总览)
+  // 侧滑/返回键逐层退出:搜索 → 节点选中 → 聚焦 → 下钻(中话题→大话题→总览)
   useBackHandler(
-    () => !!active && (searchQuery !== '' || nodeDetail !== null || selectedNodeIds.length > 0 || focusedNodeId !== null || drillTopicId !== null || drillSuperId !== null),
+    () => !!active && (searchQuery !== '' || selectedNodeIds.length > 0 || focusedNodeId !== null || drillTopicId !== null || drillSuperId !== null),
     () => {
       if (searchQuery !== '') { setSearchQuery(''); return true; }
-      if (nodeDetail !== null) { setDetailNodeId(null); setNodeDetail(null); return true; }
       if (selectedNodeIds.length > 0) { setSelectedNodeIds([]); return true; }
       if (focusedNodeId !== null) { setFocusedNodeId(null); return true; }
       if (drillTopicId !== null || drillSuperId !== null) { drillBack(); return true; }
