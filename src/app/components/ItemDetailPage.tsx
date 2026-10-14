@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, Pin, Trash2, FileText, Image as ImageIcon, Mic, File, Sparkles, Loader2, AlertTriangle, Pencil, Save, X, Check } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { useBackHandler } from '../../lib/backHandler';
 import { toast } from 'sonner';
 import { supabase } from '../../lib/supabase';
 import { cleanupCaptureRefs } from '../../lib/captureRefs';
@@ -10,6 +11,8 @@ interface ItemDetailPageProps {
   itemId: string;
   onBack: () => void;
   onUpdate?: () => void;
+  /** keep-alive 可见性: 侧滑拦截仅在本页可见时生效 */
+  active?: boolean;
 }
 
 interface ItemDetail {
@@ -50,7 +53,7 @@ const typeLabels = {
   import: '导入文件'
 };
 
-export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps) {
+export function ItemDetailPage({ itemId, onBack, onUpdate, active }: ItemDetailPageProps) {
   const [item, setItem] = useState<ItemDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [isPinning, setIsPinning] = useState(false);
@@ -63,6 +66,16 @@ export function ItemDetailPage({ itemId, onBack, onUpdate }: ItemDetailPageProps
   const [draftTitle, setDraftTitle] = useState('');
   const [draftNote, setDraftNote] = useState('');
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  // 侧滑/返回键:先关编辑层/删除确认,再走页面级返回
+  useBackHandler(
+    () => !!active && (showEdit || showDeleteConfirm),
+    () => {
+      if (showDeleteConfirm) { setShowDeleteConfirm(false); return true; }
+      if (showEdit) { setShowEdit(false); return true; }
+      return false;
+    }
+  );
 
   useEffect(() => {
     fetchItemDetail();
