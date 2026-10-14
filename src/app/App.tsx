@@ -10,6 +10,7 @@ import { LoginPage } from './components/LoginPage';
 import { ItemDetailPage } from './components/ItemDetailPage';
 import { Toaster } from './components/ui/sonner';
 import { supabase } from '../lib/supabase';
+import { consumeBack } from '../lib/backHandler';
 
 // O6: KnowledgePage 懒加载 —— 它独占 react-force-graph-2d 依赖，
 // 静态 import 会把 ~890KB 的 force-graph 打进主 chunk（影响首屏）。
@@ -46,20 +47,39 @@ export default function App() {
     checkAuth();
   }, []);
 
-  // 返回手势/返回键:从历史栈恢复页面状态(与 handlePageChange 镜像)
+  // 返回手势/返回键:页面级走 history 栈;页面内部状态(弹层/下钻/搜索)先由
+  // backHandler 栈消费——消费后把条目压回去(深度不变),再滑才真正回上一页
   // 必须位于所有条件 return 之前(Hooks 顺序恒定)
   useEffect(() => {
     history.replaceState({ evolvmind: true, page: 'home', itemId: null }, '');
+    let lastState: { evolvmind: boolean; page: Page; itemId: string | null } = { evolvmind: true, page: 'home', itemId: null };
+    const stateOf = (s: { evolvmind?: boolean; page?: Page; itemId?: string | null } | null) =>
+      s && s.evolvmind && s.page ? { evolvmind: true, page: s.page, itemId: s.itemId ?? null } : null;
     const onPopState = (event: PopStateEvent) => {
-      const state = event.state as { evolvmind?: boolean; page?: Page; itemId?: string | null } | null;
-      if (!state || !state.evolvmind || !state.page) return;
+      const state = stateOf(event.state as Parameters<typeof stateOf>[0]);
+      if (!state) return;
+      if (consumeBack()) {
+        // 内部状态消费了这次返回:恢复历史深度,停留当前页
+        history.pushState(lastState, '');
+        return;
+      }
+      lastState = state;
       setCurrentPage(state.page);
-      setVisitedPages((prev) => (prev.has(state.page!) ? prev : new Set(prev).add(state.page!)));
+      setVisitedPages((prev) => (prev.has(state.page) ? prev : new Set(prev).add(state.page)));
       if (state.page === 'item-detail' && state.itemId) setSelectedItemId(state.itemId);
       if (state.page === 'knowledge') setSelectedKnowledgeNodeId(state.itemId ?? null);
     };
+    // handlePageChange 前进时同步 lastState(读取全局变量会引入时序问题,这里用事件桥)
+    const onNav = (e: Event) => {
+      const s = stateOf((e as CustomEvent).detail);
+      if (s) lastState = s;
+    };
     window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    window.addEventListener('evolvmind:nav', onNav);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('evolvmind:nav', onNav);
+    };
   }, []);
 
   // PWA 自动更新提示:新版本在后台装好后提示用户重启生效(autoUpdate 策略下
@@ -138,8 +158,11 @@ export default function App() {
     if (newPage === 'knowledge') {
       setSelectedKnowledgeNodeId(itemId || null);
     }
-    // 移动端侧滑/返回键:每次前进导航压入历史栈,popstate 统一回退
-    history.pushState({ evolvmind: true, page: newPage, itemId: itemId ?? null }, '');
+    // 移动端侧滑/返回键:每次前进导航压入历史栈,popstate 统一回退;
+    // 同时广播给 popstate 闭包维护 lastState(内部状态拦截后要压回这个)
+    const navState = { evolvmind: true, page: newPage, itemId: itemId ?? null };
+    history.pushState(navState, '');
+    window.dispatchEvent(new CustomEvent('evolvmind:nav', { detail: navState }));
   };
 
 
@@ -155,7 +178,7 @@ export default function App() {
   const renderPageFor = (page: Page) => {
     switch (page) {
       case 'data':
-        return <DataPage onNavigate={(p, id) => handlePageChange(p as Page, id)} />;
+        return <DataPage active={page === currentPage} onNavigate={(p, id) => handlePageChange(p as Page, id)} />;
       case 'home':
         return <HomePage active={page === currentPage} onNavigate={(p, id) => handlePageChange(p as Page, id)} />;
       case 'capture':
@@ -163,14 +186,15 @@ export default function App() {
       case 'knowledge':
         return (
           <Suspense fallback={<KnowledgePageFallback />}>
-            <KnowledgePage initialNodeId={selectedKnowledgeNodeId} onNavigate={(p, id) => handlePageChange(p as Page, id)} />
+            <KnowledgePage active={page === currentPage} initialNodeId={selectedKnowledgeNodeId} onNavigate={(p, id) => handlePageChange(p as Page, id)} />
           </Suspense>
         );
       case 'settings':
-        return <SettingsPage onLogout={handleLogout} />;
+        return <SettingsPage active={page === currentPage} onLogout={handleLogout} />;
       case 'item-detail':
         return selectedItemId ? (
           <ItemDetailPage
+            active={page === currentPage}
             itemId={selectedItemId}
             onBack={() => history.back()}
             onUpdate={() => {
