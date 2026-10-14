@@ -1,5 +1,6 @@
 import { Type, Camera, Mic, FileUp, Save, X, Loader2, Play, Pause, Trash2, Sparkles, CheckCircle2, ArrowRight, Home, Share2, FileText, AlertCircle } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
+import { useBackHandler } from '../../lib/backHandler';
 import { supabase } from '../../lib/supabase';
 import { extractInformation } from '../../lib/ai';
 import { buildKnowledgeGraphFromContent, checkGraphSetup, stringifyError } from '../../lib/graph';
@@ -99,6 +100,20 @@ export function CapturePage({ onNavigate, active }: CapturePageProps) {
     keywords: [] as string[],
     summary: ''
   });
+
+  // 侧滑/返回键:退出当前捕获模式(含文件/语音/文本与预览),回到空白捕获页
+  useBackHandler(
+    () => !!active && (mode !== null || file !== null),
+    () => {
+      if (mode === null && file === null) return false;
+      setMode(null);
+      setTextInput('');
+      if (file && previewUrl) URL.revokeObjectURL(previewUrl);
+      setFile(null);
+      setPreviewUrl(null);
+      return true;
+    }
+  );
 
   const [isSaving, setIsSaving] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
