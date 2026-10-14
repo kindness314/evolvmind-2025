@@ -37,3 +37,11 @@
 - 排障技巧: 按"上游报错格式"判断请求实际打到谁(DeepSeek: `Authentication Fails`+request_id;硅基流动: `{"code":30014,...}`;白山边缘: HTML ACCESS DENIED)。
 - 终验: prod-smoke 双链路 extract 200 / backfill processed 2/2。
 - 用户 key 流转: 全部经 Vercel 控制台自助,未经过会话;EDGEFN_TEST_KEY secret 是旧白山 key(仍有效,仅烟测用,可删)。
+
+## 五、追记(2026-10-15):侧滑返回全场景覆盖 + 真因复盘
+
+- **v1.0.1 真因**: Capacitor 8 核心没有任何返回键处理(无 onBackPressed/canGoBack),默认=直接 finish Activity。此前"WebView 默认能回则回"的假设错误。修: MainActivity 注册 OnBackPressedCallback(goBack or 透传)。
+- **v1.0.2 分层拦截**: `src/lib/backHandler.ts` 全局栈 + App.popstate 先 consumeBack(消费后 pushState 保持深度)。keep-alive 页面**必须传 active 门控**,否则切走后残留内部状态会误拦截别的页的返回。
+- 覆盖: 知识页(搜索→选中→聚焦→下钻)、数据页(删除确认→多选→搜索)、详情页(删除确认→编辑)、捕获页(退出模式)、设置页(资料编辑)。
+- 验证通道: 手机开 USB 调试 + 小米"USB 调试(安全设置)"后,`adb shell input keyevent 4` + `uiautomator dump` 可全自动真机回归(读 text 判页面)。
+- 真机白屏一次: 自动化连点切换页时懒加载 chunk 闪白,瞬态非 bug。
