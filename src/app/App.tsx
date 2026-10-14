@@ -1,4 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
+import { toast } from 'sonner';
 import { Home, Share2, User, Database, Loader2, PenSquare } from 'lucide-react';
 import { motion } from 'motion/react';
 import { HomePage } from './components/HomePage';
@@ -59,6 +60,15 @@ export default function App() {
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  // PWA 自动更新提示:新版本在后台装好后提示用户重启生效(autoUpdate 策略下
+  // 新 SW 立即接管,但当前页面仍跑旧资源,需下次启动才载入新界面)
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const onControllerChange = () => toast.success('新版本已就绪', { description: '完全关闭并重新打开应用后生效' });
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
+    return () => navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
   }, []);
 
   const checkAuth = async () => {

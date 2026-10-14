@@ -1,6 +1,5 @@
 import { Lock, LogOut, Loader2, ShieldCheck, RefreshCw, Pencil, Check, X, FileJson, FileText, HardDrive, Upload, KeyRound, TriangleAlert } from 'lucide-react';
 import { motion } from 'motion/react';
-import { useBackHandler } from '../../lib/backHandler';
 import { toast } from 'sonner';
 import { createClient } from '@supabase/supabase-js';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
@@ -11,11 +10,9 @@ import { getApiAuthHeaders } from '../../lib/apiAuth';
 
 interface SettingsPageProps {
   onLogout?: () => void;
-  /** keep-alive 可见性: 侧滑拦截仅在本页可见时生效 */
-  active?: boolean;
 }
 
-export function SettingsPage({ onLogout, active }: SettingsPageProps) {
+export function SettingsPage({ onLogout }: SettingsPageProps) {
   const [loggingOut, setLoggingOut] = useState(false);
   const supabase = createClient(
     `https://${projectId}.supabase.co`,
@@ -33,12 +30,6 @@ export function SettingsPage({ onLogout, active }: SettingsPageProps) {
   const [editingProfile, setEditingProfile] = useState(false);
   const [nameDraft, setNameDraft] = useState(profileName);
   const avatarInputRef = useRef<HTMLInputElement>(null);
-
-  // 侧滑/返回键:资料编辑层打开时先关闭
-  useBackHandler(
-    () => !!active && editingProfile,
-    () => { setEditingProfile(false); return true; }
-  );
   const displayName = profileName || (isDemo ? '演示账户' : (userName || '用户'));
   const saveProfile = () => {
     const name = nameDraft.trim();
