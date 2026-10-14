@@ -4,10 +4,10 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: overseas + correct model + valid key
+      - name: deepseek official API reachable from US
         run: |
-          curl -s --connect-timeout 15 -X POST https://api.edgefn.net/v1/chat/completions \
+          curl -s --connect-timeout 15 -X POST https://api.deepseek.com/chat/completions \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.EDGEFN_TEST_KEY }}" \
-            -d '{"model":"MiniMax-M2.5","messages":[{"role":"user","content":"hi"}]}' \
+            -H "Authorization: Bearer sk-invalid-test" \
+            -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}' \
             -w "\nHTTP %{http_code} in %{time_total}s\n" | head -c 400
