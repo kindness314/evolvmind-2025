@@ -6,6 +6,7 @@ import ForceGraph2D, { type ForceGraphMethods } from 'react-force-graph-2d';
 import type { PostgrestFilterBuilder } from '@supabase/postgrest-js';
 import { supabase } from '../../lib/supabase';
 import { checkGraphSetup, type GraphSetupStatus } from '../../lib/graph';
+import { useBackHandler } from '../../lib/backHandler';
 import { semanticSearchKnowledgeNodes, type KnowledgeNodeSearchResult } from '../../lib/graphSearch';
 import { getApiAuthHeaders } from '../../lib/apiAuth';
 import { buildHierarchicalGraph, buildSemanticHierarchy, type SuperTopic, type TopicAggregate } from '../../lib/community';
@@ -242,6 +243,8 @@ function getConnectedComponentNodeIds(startId: string, links: GraphLink[]) {
 export interface KnowledgePageProps {
   initialNodeId?: string | null;
   onNavigate?: (page: string, itemId?: string) => void;
+  /** keep-alive 可见性: 侧滑拦截仅在本页可见时生效 */
+  active?: boolean;
 }
 
 interface NodeDetailState {
@@ -252,7 +255,7 @@ interface NodeDetailState {
   error: string | null;
 }
 
-export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps) {
+export function KnowledgePage({ initialNodeId, onNavigate, active }: KnowledgePageProps) {
   const fgRef = useRef<ForceGraphMethods<GraphNode, GraphLink> | undefined>(undefined);
   // d3-drag 仅在 ForceGraph 挂载时检测触摸能力(navigator.maxTouchPoints / ontouchstart)决定是否绑定
   // 触摸拖监听器;DevTools 设备仿真在页面加载后才开启触摸时会漏绑(表现:触摸可平移缩放但拖不动节点)。
@@ -1375,6 +1378,18 @@ export function KnowledgePage({ initialNodeId, onNavigate }: KnowledgePageProps)
       fitAllNodes();
     }, 50);
   }, [drillTopicId, fitAllNodes]);
+
+  // 侧滑/返回键逐层退出:搜索 → 节点选中 → 聚焦 → 下钻(中话题→大话题→总览)
+  useBackHandler(
+    () => !!active && (searchQuery !== '' || selectedNodeIds.length > 0 || focusedNodeId !== null || drillTopicId !== null || drillSuperId !== null),
+    () => {
+      if (searchQuery !== '') { setSearchQuery(''); return true; }
+      if (selectedNodeIds.length > 0) { setSelectedNodeIds([]); return true; }
+      if (focusedNodeId !== null) { setFocusedNodeId(null); return true; }
+      if (drillTopicId !== null || drillSuperId !== null) { drillBack(); return true; }
+      return false;
+    }
+  );
 
   const handleCategorySelect = useCallback((kind: string) => {
     autoFitRef.current = true;
