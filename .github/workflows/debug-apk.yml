@@ -9,8 +9,7 @@ jobs:
         with: { node-version: 22, cache: npm }
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }
-      - run: npm ci
-      - run: npx cap sync android
+      - run: mkdir -p android/app/src/main/assets && npx cap sync android
       - name: Assemble debug APK (WebView 调试可用)
         working-directory: android
         run: |
