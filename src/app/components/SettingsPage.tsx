@@ -705,6 +705,11 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
             )}
           </button>
       </div>
+
+      {/* 版本标识:验证 PWA 自动更新(改版后此行变化 = 更新生效) */}
+      <div className="py-4 text-center text-[11px] text-gray-300">
+        v{__BUILD_SHA__} · {__BUILD_TIME__}
+      </div>
     </div>
   );
 }
