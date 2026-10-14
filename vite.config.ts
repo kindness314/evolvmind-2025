@@ -3,6 +3,10 @@ import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { execSync } from 'node:child_process'
+// 构建标识:版本可见化,用于验证 PWA 自动更新是否生效(设置页展示)
+const BUILD_SHA = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) || (() => { try { return execSync('git rev-parse --short HEAD').toString().trim() } catch { return 'dev' } })()
+const BUILD_TIME = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
 export default defineConfig({
   plugins: [
@@ -40,6 +44,10 @@ export default defineConfig({
       },
     }),
   ],
+  define: {
+    __BUILD_SHA__: JSON.stringify(BUILD_SHA),
+    __BUILD_TIME__: JSON.stringify(BUILD_TIME),
+  },
   server: {
     proxy: {
       // Local full-stack workaround: let Vite serve the frontend while Vercel
