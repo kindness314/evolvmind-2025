@@ -64,7 +64,7 @@ export async function extractImageText(buffer: Buffer, mime: string, customKey =
   // key 回退链（与 embedding 同理）：专用/自定义 key -> 环境 CHAT -> 环境 API
   const keysToTry = Array.from(new Set([customKey, process.env.MINIMAX_CHAT_API_KEY || '', process.env.MINIMAX_API_KEY || ''].map((k) => k.trim()).filter(Boolean)));
   if (!keysToTry.length) return '';
-  const baseUrl = (process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '');
+  const baseUrl = (process.env.VISION_BASE_URL || process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '');
   const models = Array.from(new Set([process.env.MINIMAX_VISION_MODEL || 'GLM-4.5V', 'MiniMax-VL-01']));
   const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
   for (const apiKey of keysToTry) {
@@ -118,7 +118,7 @@ export function isAudioMime(mime: string): boolean {
 export async function extractAudioText(buffer: Buffer, mime: string, fileName = '', customKey = ''): Promise<string> {
   const apiKey = customKey || process.env.MINIMAX_CHAT_API_KEY || process.env.MINIMAX_API_KEY || '';
   if (!apiKey) return '';
-  const baseUrl = process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
+  const baseUrl = process.env.VISION_BASE_URL || process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
   const model = process.env.MINIMAX_ASR_MODEL || 'whisper-1';
   const ext = fileName.split('.').pop()?.toLowerCase() || (mime.split('/')[1] || 'mp3');
   try {
