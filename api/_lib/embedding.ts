@@ -55,7 +55,9 @@ export async function generateEmbedding(params: {
   baseUrl?: string;
   preferredModel?: string;
 }): Promise<EmbeddingResult> {
-  const baseUrl = params.baseUrl || process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
+  // EMBEDDING_BASE_URL 独立于 chat 的 MINIMAX_BASE_URL:chat 可切 DeepSeek 官方(无 /embeddings),
+  // 向量仍走 edgefn/其它 embedding 服务,互不影响
+  const baseUrl = params.baseUrl || process.env.EMBEDDING_BASE_URL || process.env.MINIMAX_BASE_URL || DEFAULT_BASE_URL;
   const models = getEmbeddingModels(params.preferredModel);
 
   const urlsToTry = Array.from(
