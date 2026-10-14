@@ -61,7 +61,7 @@ type ExtractedGraph = {
 };
 
 const DEFAULT_BASE_URL = 'https://api.edgefn.net/v1';
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || (process.env.VITE_SUPABASE_PROJECT_ID ? `https://${process.env.VITE_SUPABASE_PROJECT_ID}.supabase.co` : '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
 // Vercel 函数时长上限: 默认 Hobby 10s 会杀掉正常 LLM 调用(实测 8-13s), 提到 60s 与总预算对齐
