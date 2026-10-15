@@ -4,17 +4,14 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: 真 key 直连 deepseek-flash
+      - name: SF chat deepseek V3.1
         run: |
-          curl -s --connect-timeout 10 -m 40 -X POST https://api.deepseek.com/chat/completions \
+          curl -s --connect-timeout 10 -m 40 -X POST https://api.siliconflow.cn/v1/chat/completions \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.DS_TEST_KEY }}" \
-            -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"回复一个字:好"}],"max_tokens":10}' \
-            -w "\n[realkey-flash] HTTP %{http_code} in %{time_total}s\n" | head -c 300
-      - name: 真 key 直连 deepseek-chat(旧名)
+            -H "Authorization: Bearer ${{ secrets.SF_TEST_KEY }}" \
+            -d '{"model":"deepseek-ai/DeepSeek-V3.1","messages":[{"role":"user","content":"回复一个字:好"}],"max_tokens":10}' \
+            -w "\n[sf-v31] HTTP %{http_code} in %{time_total}s\n" | head -c 300
+      - name: SF 模型列表确认 ID
         run: |
-          curl -s --connect-timeout 10 -m 40 -X POST https://api.deepseek.com/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.DS_TEST_KEY }}" \
-            -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"回复一个字:好"}],"max_tokens":10}' \
-            -w "\n[realkey-oldchat] HTTP %{http_code} in %{time_total}s\n" | head -c 300
+          curl -s --connect-timeout 10 -m 20 https://api.siliconflow.cn/v1/models \
+            -H "Authorization: Bearer ${{ secrets.SF_TEST_KEY }}" | grep -o '"id":"[^"]*"' | grep -iE "deepseek|qwen" | head -8
