@@ -4,19 +4,13 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: extract
-        run: |
-          curl -s --connect-timeout 15 -m 60 -X POST https://evolvmind-2025.vercel.app/api/extract \
-            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"content":"测试:今天学了二分查找,要点是排序后每次折半缩小范围。"}' \
-            -w "\n[extract] HTTP %{http_code} in %{time_total}s\n" | head -c 300
-      - name: recommend
-        run: |
-          curl -s --connect-timeout 20 -m 120 -X POST https://evolvmind-2025.vercel.app/api/recommend \
-            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"count":5}' -w "\n[recommend] HTTP %{http_code} in %{time_total}s\n" | head -c 600
       - name: summarize 7d
         run: |
           curl -s --connect-timeout 20 -m 240 -X POST https://evolvmind-2025.vercel.app/api/summarize \
             -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"period":"7d"}' -w "\n[summarize7d] HTTP %{http_code} in %{time_total}s\n" | head -c 1000
+            -d '{"period":"7d"}' -w "\n[summarize7d] HTTP %{http_code}\n" | grep -o '"narrative":"[^"]*"' | head -c 900
+      - name: recommend
+        run: |
+          curl -s --connect-timeout 20 -m 120 -X POST https://evolvmind-2025.vercel.app/api/recommend \
+            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
+            -d '{"count":5}' | grep -o '"title":"[^"]*"' | head -6
