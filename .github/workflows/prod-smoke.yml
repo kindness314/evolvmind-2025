@@ -4,26 +4,13 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: extract (chat/DeepSeek 层)
+      - name: models(暴露当前 base_url 指向)
         run: |
-          curl -s --connect-timeout 15 -m 60 -X POST https://evolvmind-2025.vercel.app/api/extract \
+          curl -s --connect-timeout 15 -m 30 https://evolvmind-2025.vercel.app/api/models \
+            -H "x-evolvmind-demo: true" -w "\n[models] HTTP %{http_code}\n" | head -c 500
+      - name: extract
+        run: |
+          curl -s --connect-timeout 15 -m 45 -X POST https://evolvmind-2025.vercel.app/api/extract \
             -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
             -d '{"content":"测试:今天学了二分查找。"}' \
-            -w "\n[extract] HTTP %{http_code} in %{time_total}s\n" | head -c 300
-      - name: backfill (embedding/SF 层)
-        run: |
-          curl -s --connect-timeout 15 -m 60 -X POST https://evolvmind-2025.vercel.app/api/backfill \
-            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"batch_size":2}' -w "\n[backfill] HTTP %{http_code} in %{time_total}s\n" | head -c 300
-      - name: deepseek 直连(绕过我们服务)
-        run: |
-          curl -s --connect-timeout 15 -m 60 -X POST https://api.deepseek.com/chat/completions \
-            -H "Content-Type: application/json" -H "Authorization: Bearer sk-invalid" \
-            -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}' \
-            -w "\n[deepseek] HTTP %{http_code} in %{time_total}s\n" | head -c 200
-      - name: siliconflow 直连
-        run: |
-          curl -s --connect-timeout 15 -m 60 -X POST https://api.siliconflow.cn/v1/embeddings \
-            -H "Content-Type: application/json" -H "Authorization: Bearer sk-invalid" \
-            -d '{"model":"BAAI/bge-m3","input":"t"}' \
-            -w "\n[SF] HTTP %{http_code} in %{time_total}s\n" | head -c 200
+            -w "\n[extract] HTTP %{http_code} in %{time_total}s\n" | head -c 400
