@@ -4,13 +4,15 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: models(暴露当前 base_url 指向)
+      - name: deepseek chat 新模型名端点测试(假 key,401=通)
         run: |
-          curl -s --connect-timeout 15 -m 30 https://evolvmind-2025.vercel.app/api/models \
-            -H "x-evolvmind-demo: true" -w "\n[models] HTTP %{http_code}\n" | head -c 500
-      - name: extract
+          curl -s --connect-timeout 10 -m 20 -X POST https://api.deepseek.com/chat/completions \
+            -H "Content-Type: application/json" -H "Authorization: Bearer sk-invalid" \
+            -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}]}' \
+            -w "\n[flash] HTTP %{http_code} in %{time_total}s\n" | head -c 200
+      - name: deepseek chat 旧模型名对照
         run: |
-          curl -s --connect-timeout 15 -m 45 -X POST https://evolvmind-2025.vercel.app/api/extract \
-            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"content":"测试:今天学了二分查找。"}' \
-            -w "\n[extract] HTTP %{http_code} in %{time_total}s\n" | head -c 400
+          curl -s --connect-timeout 10 -m 20 -X POST https://api.deepseek.com/chat/completions \
+            -H "Content-Type: application/json" -H "Authorization: Bearer sk-invalid" \
+            -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}' \
+            -w "\n[oldchat] HTTP %{http_code} in %{time_total}s\n" | head -c 200
