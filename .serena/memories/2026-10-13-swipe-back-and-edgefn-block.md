@@ -60,3 +60,12 @@
 - **用户决策**: 暂靠手机代理顶着(不买域名)。白屏时=代理断,切代理节点/等恢复即好。
 - debug 通道已备好(复用): uninstall 正式版→装 apk-dbg→`adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>`→`/json` 拿 ws;MIUI 装包需开"USB 安装"并确认弹窗。
 - .github/workflows/debug-apk.yml 留存(workflow_dispatch 出带调试的 debug 包)。
+
+## 八、展示日事故(2026-10-15):DeepSeek 官方推理层挂死 → 全面切硅基流动
+
+- 12:00 发现生产 AI 全挂(extract/recommend/summarize 超时)。分诊: embedding(SF)正常, chat 挂。
+- 证据链: 假 key 401 秒回(网络通/非封 IP); 真 key 无论 deepseek-chat(已退役名)还是 deepseek-flash 全部 40s+ 挂死; /models 秒回。结论: **DeepSeek 推理层当日故障**(鉴权层正常)。
+- 处置: chat 切硅基流动 `deepseek-ai/DeepSeek-V3.1`(Actions 实测秒回后切换): MINIMAX_BASE_URL=api.siliconflow.cn/v1, MINIMAX_CHAT_API_KEY=SF key(与 MINIMAX_API_KEY 同值), MINIMAX_MODEL=deepseek-ai/DeepSeek-V3.1。**chat 与 embedding 现在同一家(SF),Vercel 出口只依赖一个供应商**。
+- 同日展示强化: 语义推荐相似度门槛 0.68(噪音治理); 总结提示词改"知识演化第一段+结尾必带可执行行动/提问"(实测产出合规)。
+- 排障技巧: curl -w 统计行会被 `head -c` 触发 SIGPIPE 吞掉,成功时看不到状态码——看响应体和时间戳。
+- 密钥卫生: 诊断用的 DS_TEST_KEY/SF_TEST_KEY secret 用完即删。
