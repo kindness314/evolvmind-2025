@@ -394,7 +394,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // 多样性：同一捕获最多参与 1 条语义推荐，避免同一捕获与多个近邻重复刷屏
       const usedCaptures = new Set<string>();
       const diversePairs = similarPairs.filter((pair) => {
-        if (usedCaptures.has(pair.a.id) || usedCaptures.has(pair.b.id)) return false;
+        if (pair.similarity < 0.68) return false; // 弱相似只入围扩池,不进候选(噪音治理 2026-10-15)
         usedCaptures.add(pair.a.id);
         usedCaptures.add(pair.b.id);
         return true;
