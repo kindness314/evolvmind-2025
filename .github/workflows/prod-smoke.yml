@@ -8,6 +8,6 @@ jobs:
         run: |
           code=$(curl -s --connect-timeout 20 -m 240 -X POST https://evolvmind-2025.vercel.app/api/summarize \
             -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"period":"7d"}' -o sum.json -w '%{http_code}' %{time_total}s)
+            -d '{"period":"7d"}' -o sum.json -w '%{http_code}')
           echo "HTTP=$code"
           node -e "const j=require('./sum.json');console.log((j.narrative||JSON.stringify(j)).slice(0,900))" 2>/dev/null || head -c 400 sum.json
