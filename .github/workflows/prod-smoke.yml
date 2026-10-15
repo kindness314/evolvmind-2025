@@ -4,13 +4,26 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: recommend (demo)
+      - name: extract (chat/DeepSeek 层)
         run: |
-          curl -s --connect-timeout 20 -m 120 -X POST https://evolvmind-2025.vercel.app/api/recommend \
+          curl -s --connect-timeout 15 -m 60 -X POST https://evolvmind-2025.vercel.app/api/extract \
             -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"count":5}' -w "\n[recommend] HTTP %{http_code} in %{time_total}s\n" | head -c 1500
-      - name: summarize 7d (demo)
+            -d '{"content":"测试:今天学了二分查找。"}' \
+            -w "\n[extract] HTTP %{http_code} in %{time_total}s\n" | head -c 300
+      - name: backfill (embedding/SF 层)
         run: |
-          curl -s --connect-timeout 20 -m 300 -X POST https://evolvmind-2025.vercel.app/api/summarize \
+          curl -s --connect-timeout 15 -m 60 -X POST https://evolvmind-2025.vercel.app/api/backfill \
             -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"period":"7d"}' -w "\n[summarize7d] HTTP %{http_code} in %{time_total}s\n" | head -c 1800
+            -d '{"batch_size":2}' -w "\n[backfill] HTTP %{http_code} in %{time_total}s\n" | head -c 300
+      - name: deepseek 直连(绕过我们服务)
+        run: |
+          curl -s --connect-timeout 15 -m 60 -X POST https://api.deepseek.com/chat/completions \
+            -H "Content-Type: application/json" -H "Authorization: Bearer sk-invalid" \
+            -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}' \
+            -w "\n[deepseek] HTTP %{http_code} in %{time_total}s\n" | head -c 200
+      - name: siliconflow 直连
+        run: |
+          curl -s --connect-timeout 15 -m 60 -X POST https://api.siliconflow.cn/v1/embeddings \
+            -H "Content-Type: application/json" -H "Authorization: Bearer sk-invalid" \
+            -d '{"model":"BAAI/bge-m3","input":"t"}' \
+            -w "\n[SF] HTTP %{http_code} in %{time_total}s\n" | head -c 200
