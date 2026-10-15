@@ -4,24 +4,13 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: check prod bundle has back-interceptor
+      - name: recommend (demo)
         run: |
-          set -e
-          HTML=$(curl -s https://evolvmind-2025.vercel.app/)
-          JS=$(echo "$HTML" | grep -o '/assets/[^"]*index[^"]*\.js' | head -1)
-          curl -s "https://evolvmind-2025.vercel.app$JS" -o main.js
-          echo "bundle: $JS size: $(wc -c < main.js)"
-          echo "consumeBack: $(grep -c consumeBack main.js || true)"
-          echo "popstate: $(grep -c popstate main.js || true)"
-          CHUNKS=$(echo "$HTML" | grep -o '/assets/KnowledgePage[^"]*\.js' | head -1)
-          echo "knowledge chunk: $CHUNKS"
-          if [ -n "$CHUNKS" ]; then
-            curl -s "https://evolvmind-2025.vercel.app$CHUNKS" -o kp.js
-            echo "kp useBackHandler: $(grep -c useBackHandler kp.js || true)"
-          fi
-          # 列出所有 chunk 里含 useBackHandler 的
-          for c in $(echo "$HTML" | grep -o '/assets/[A-Za-z0-9_-]*\.js' | head -40); do
-            n=$(curl -s "https://evolvmind-2025.vercel.app$c" | grep -c useBackHandler || true)
-            [ "$n" != "0" ] && echo "HAS-INTERCEPTOR: $c ($n)"
-          done
-          true
+          curl -s --connect-timeout 20 -m 120 -X POST https://evolvmind-2025.vercel.app/api/recommend \
+            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
+            -d '{"count":5}' -w "\n[recommend] HTTP %{http_code} in %{time_total}s\n" | head -c 1500
+      - name: summarize 7d (demo)
+        run: |
+          curl -s --connect-timeout 20 -m 300 -X POST https://evolvmind-2025.vercel.app/api/summarize \
+            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
+            -d '{"period":"7d"}' -w "\n[summarize7d] HTTP %{http_code} in %{time_total}s\n" | head -c 1800
