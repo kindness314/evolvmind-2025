@@ -53,3 +53,10 @@
 - 断点动作: 正在出 **debug APK**(.github/workflows/debug-apk.yml,WebView 调试可用)——构建中,装上后 `adb forward tcp:9222 localabstract:webview_devtools_remote_*` + chrome://inspect 或 CDP 抓真机控制台,定位白屏报错。注意 debug 包与 release 签名不同,需先卸载(登录态会掉)。
 - 手机调试已就绪: USB 调试+安全设置已开,input 注入可用;platform-tools 在 D:/evolvmind-2025/platform-tools。
 - 备忘: adb exec-out 截图在 git-bash 会 CRLF 损坏,要 `shell screencap -p /sdcard/s.png` + `adb pull`。
+
+## 七、白屏结案(2026-10-15)
+
+- **根因 = 网络,非代码**: debug 包 CDP 实锤 WebView 报 net::ERR_CONNECTION_TIMED_OUT;手机 curl vercel 时 000 时 200(基础网络始终通)。手机靠 Clash fake-ip 代理访问 vercel,路由间歇失败:主壳有 SW 缓存能开,懒加载 chunk 拉不到→整页崩;全新安装无缓存→首屏白。
+- **用户决策**: 暂靠手机代理顶着(不买域名)。白屏时=代理断,切代理节点/等恢复即好。
+- debug 通道已备好(复用): uninstall 正式版→装 apk-dbg→`adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>`→`/json` 拿 ws;MIUI 装包需开"USB 安装"并确认弹窗。
+- .github/workflows/debug-apk.yml 留存(workflow_dispatch 出带调试的 debug 包)。
