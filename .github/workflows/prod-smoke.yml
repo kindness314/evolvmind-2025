@@ -6,11 +6,8 @@ jobs:
     steps:
       - name: summarize 7d
         run: |
-          curl -s --connect-timeout 20 -m 240 -X POST https://evolvmind-2025.vercel.app/api/summarize \
+          code=$(curl -s --connect-timeout 20 -m 240 -X POST https://evolvmind-2025.vercel.app/api/summarize \
             -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"period":"7d"}' -w "\n[summarize7d] HTTP %{http_code}\n" | grep -o '"narrative":"[^"]*"' | head -c 900
-      - name: recommend
-        run: |
-          curl -s --connect-timeout 20 -m 120 -X POST https://evolvmind-2025.vercel.app/api/recommend \
-            -H "Content-Type: application/json" -H "x-evolvmind-demo: true" \
-            -d '{"count":5}' | grep -o '"title":"[^"]*"' | head -6
+            -d '{"period":"7d"}' -o sum.json -w '%{http_code}' %{time_total}s)
+          echo "HTTP=$code"
+          node -e "const j=require('./sum.json');console.log((j.narrative||JSON.stringify(j)).slice(0,900))" 2>/dev/null || head -c 400 sum.json
