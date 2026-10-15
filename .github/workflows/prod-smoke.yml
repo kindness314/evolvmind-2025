@@ -4,9 +4,7 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: edgefn headers
+      - name: graph extract hasKey
         run: |
-          curl -sv --connect-timeout 15 -X POST https://api.edgefn.net/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer test" \
-            -d '{}' 2>&1 | grep -E "^< |HTTP|server|x-|via" | head -25
+          curl -s --connect-timeout 15 -m 30 "https://evolvmind-2025.vercel.app/api/graph/extract" \
+            -H "x-evolvmind-demo: true" -w "\n[hasKey-check] HTTP %{http_code}\n" | head -c 300
